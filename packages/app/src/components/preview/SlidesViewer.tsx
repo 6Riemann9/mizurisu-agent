@@ -13,7 +13,7 @@ import {
   StickyNote,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   SLIDE_THEMES,
   exportHtmlSlidesToPptxBytes,
@@ -47,33 +47,39 @@ function buildPptxPaths(slidesPath: string): { pptxPath: string; pptxFilename: s
   return { pptxPath, pptxFilename };
 }
 
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
 function useContainerSize(
   ref: React.RefObject<HTMLDivElement | null>,
   active: boolean
 ): { width: number; height: number } {
   const [size, setSize] = useState({ width: 0, height: 0 });
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (!active) return;
     const el = ref.current;
     if (!el) return;
     const syncSize = () => {
-      setSize({ width: el.clientWidth, height: el.clientHeight });
+      setSize((prev) =>
+        prev.width === el.clientWidth && prev.height === el.clientHeight
+          ? prev
+          : { width: el.clientWidth, height: el.clientHeight }
+      );
     };
     syncSize();
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) {
-        setSize({
-          width: entry.contentRect.width,
-          height: entry.contentRect.height,
-        });
-      } else {
-        syncSize();
-      }
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
+    const observer =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            syncSize();
+          })
+        : null;
+    observer?.observe(el);
+    window.addEventListener("resize", syncSize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", syncSize);
+    };
   }, [ref, active]);
 
   return size;
@@ -123,8 +129,11 @@ export function SlidesViewer({
   const thumbRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const exportDoneTimerRef = useRef<number | null>(null);
 
-  const stageSize = useContainerSize(stageContainerRef, viewMode === "stage");
-  const fullscreenSize = useContainerSize(fullscreenRef, isFullscreen);
+  const totalSlides = deck.slides.length;
+  const currentSlide = deck.slides[currentIdx];
+
+  const stageSize = useContainerSize(stageContainerRef, viewMode === "stage" && totalSlides > 0);
+  const fullscreenSize = useContainerSize(fullscreenRef, isFullscreen && totalSlides > 0);
 
   // 切换文件时重置状态
   useEffect(() => {
@@ -209,9 +218,6 @@ export function SlidesViewer({
     };
   }, [issuesOpen, themeMenuOpen]);
 
-  const totalSlides = deck.slides.length;
-  const currentSlide = deck.slides[currentIdx];
-
   // 同步当前幻灯片 DOM 内容（处于 inline 编辑时不覆盖用户光标与选区，并强制经安全清洗）
   useEffect(() => {
     const el = slideSectionRef.current;
@@ -230,26 +236,23 @@ export function SlidesViewer({
     }
   }, [currentIdx]);
 
+  // 根据主舞台可用区域（扣除四周留白内边距）等比缩放 1280×720 幻灯片，防止分栏或窄屏下四边裁切
   const stageScale = useMemo(() => {
     if (stageSize.width <= 0 || stageSize.height <= 0) return 0.36;
-    return Math.max(
-      0.1,
-      Math.min(
-        (stageSize.width - 32) / SLIDE_WIDTH,
-        (stageSize.height - 32) / SLIDE_HEIGHT
-      )
-    );
+    const padX = stageSize.width < 480 ? 20 : 32;
+    const padY = stageSize.height < 280 ? 20 : 32;
+    const availW = Math.max(0, stageSize.width - padX);
+    const availH = Math.max(0, stageSize.height - padY);
+    return Math.max(0.05, Math.min(availW / SLIDE_WIDTH, availH / SLIDE_HEIGHT));
   }, [stageSize.width, stageSize.height]);
 
   const fullscreenScale = useMemo(() => {
     if (fullscreenSize.width <= 0 || fullscreenSize.height <= 0) return 0.75;
-    return Math.max(
-      0.15,
-      Math.min(
-        (fullscreenSize.width - 48) / SLIDE_WIDTH,
-        (fullscreenSize.height - 88) / SLIDE_HEIGHT
-      )
-    );
+    const padX = fullscreenSize.width < 640 ? 24 : 48;
+    const padY = fullscreenSize.height < 480 ? 76 : 96;
+    const availW = Math.max(0, fullscreenSize.width - padX);
+    const availH = Math.max(0, fullscreenSize.height - padY);
+    return Math.max(0.05, Math.min(availW / SLIDE_WIDTH, availH / SLIDE_HEIGHT));
   }, [fullscreenSize.width, fullscreenSize.height]);
 
   const activeThemeMeta = useMemo(
@@ -449,7 +452,7 @@ export function SlidesViewer({
           handleSelectSlide(currentIdx - 1);
         }
       }}
-      className="flex flex-col h-full min-h-0 bg-[var(--bg-canvas)] outline-none relative"
+      className="flex flex-col h-full min-w-0 min-h-0 bg-[var(--bg-canvas)] outline-none relative"
     >
       {/* 顶部自适应极简工具栏（窄屏与分栏下自动换行，防止按钮重叠与挤出视口） */}
       <div className="min-h-9 shrink-0 py-1 px-2 border-b border-[var(--border-hairline)] bg-[var(--bg-sidebar)] flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 text-xs select-none">
@@ -793,11 +796,11 @@ export function SlidesViewer({
           </button>
         </div>
       ) : (
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           {/* 中部 16:9 无损舞台 */}
           <div
             ref={stageContainerRef}
-            className="flex-1 min-h-0 overflow-hidden bg-[var(--surface-paper)] flex items-center justify-center relative"
+            className="flex-1 min-w-0 min-h-0 overflow-hidden bg-[var(--surface-paper)] flex items-center justify-center relative"
           >
             {doubleClickEdit && (
               <div className="absolute top-2.5 right-3 z-10 px-2 py-0.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-surface)]/90 text-[10px] text-[var(--text-secondary)] pointer-events-none">
@@ -813,70 +816,63 @@ export function SlidesViewer({
                   : "ring-[var(--border-hairline)]"
               }`}
               style={{
-                width: Math.round(SLIDE_WIDTH * stageScale),
-                height: Math.round(SLIDE_HEIGHT * stageScale),
+                width: SLIDE_WIDTH * stageScale,
+                height: SLIDE_HEIGHT * stageScale,
               }}
             >
               <style>{scopedCss}</style>
-              <div
+              <section
+                ref={slideSectionRef}
+                className="slide outline-none"
+                data-slide-index={currentIdx + 1}
+                data-title={currentSlide?.title || ""}
+                data-notes={currentSlide?.notes || ""}
+                contentEditable={isEditingSlide}
+                suppressContentEditableWarning
                 style={{
                   width: SLIDE_WIDTH,
                   height: SLIDE_HEIGHT,
+                  position: "relative",
+                  overflow: "hidden",
                   transform: `scale(${stageScale})`,
                   transformOrigin: "top left",
+                  cursor: doubleClickEdit
+                    ? isEditingSlide
+                      ? "text"
+                      : "pointer"
+                    : "default",
                 }}
-              >
-                <section
-                  ref={slideSectionRef}
-                  className="slide outline-none"
-                  data-slide-index={currentIdx + 1}
-                  data-title={currentSlide?.title || ""}
-                  data-notes={currentSlide?.notes || ""}
-                  contentEditable={isEditingSlide}
-                  suppressContentEditableWarning
-                  style={{
-                    width: SLIDE_WIDTH,
-                    height: SLIDE_HEIGHT,
-                    position: "relative",
-                    overflow: "hidden",
-                    cursor: doubleClickEdit
-                      ? isEditingSlide
-                        ? "text"
-                        : "pointer"
-                      : "default",
-                  }}
-                  onDoubleClick={(e) => {
-                    if (!doubleClickEdit) return;
-                    e.stopPropagation();
-                    if (!isEditingSlide) {
-                      e.currentTarget.contentEditable = "true";
-                      setIsEditingSlide(true);
-                      e.currentTarget.focus();
-                    }
-                  }}
-                  onBlur={(e) => {
-                    if (!isEditingSlide) return;
-                    if (
-                      e.relatedTarget &&
-                      e.currentTarget.contains(e.relatedTarget as Node)
-                    ) {
-                      return;
-                    }
-                    void commitInlineSlideEdit(e.currentTarget.innerHTML);
-                  }}
-                  onKeyDown={(e) => {
-                    if (isEditingSlide && e.key === "Escape") {
-                      e.preventDefault();
-                      e.currentTarget.blur();
-                    }
-                  }}
-                />
-              </div>
+                onDoubleClick={(e) => {
+                  if (!doubleClickEdit) return;
+                  e.stopPropagation();
+                  if (!isEditingSlide) {
+                    e.currentTarget.contentEditable = "true";
+                    setIsEditingSlide(true);
+                    e.currentTarget.focus();
+                  }
+                }}
+                onBlur={(e) => {
+                  if (!isEditingSlide) return;
+                  if (
+                    e.relatedTarget &&
+                    e.currentTarget.contains(e.relatedTarget as Node)
+                  ) {
+                    return;
+                  }
+                  void commitInlineSlideEdit(e.currentTarget.innerHTML);
+                }}
+                onKeyDown={(e) => {
+                  if (isEditingSlide && e.key === "Escape") {
+                    e.preventDefault();
+                    e.currentTarget.blur();
+                  }
+                }}
+              />
             </div>
           </div>
 
           {/* 底部缩略图胶片条 + 可折叠演讲者备注 */}
-          <div className="shrink-0 border-t border-[var(--border-hairline)] bg-[var(--bg-sidebar)]">
+          <div className="shrink-0 min-w-0 border-t border-[var(--border-hairline)] bg-[var(--bg-sidebar)]">
             <div
               data-theme={deck.theme}
               className="mizurisu-slide-scope px-3 py-2 flex items-center gap-2 overflow-x-auto"
@@ -989,31 +985,24 @@ export function SlidesViewer({
             data-theme={deck.theme}
             className="mizurisu-slide-scope relative shrink-0 rounded-[4px] overflow-hidden shadow-2xl"
             style={{
-              width: Math.round(SLIDE_WIDTH * fullscreenScale),
-              height: Math.round(SLIDE_HEIGHT * fullscreenScale),
+              width: SLIDE_WIDTH * fullscreenScale,
+              height: SLIDE_HEIGHT * fullscreenScale,
             }}
           >
             <style>{scopedCss}</style>
-            <div
+            <section
+              className="slide"
+              data-slide-index={currentIdx + 1}
               style={{
                 width: SLIDE_WIDTH,
                 height: SLIDE_HEIGHT,
+                position: "relative",
+                overflow: "hidden",
                 transform: `scale(${fullscreenScale})`,
                 transformOrigin: "top left",
               }}
-            >
-              <section
-                className="slide"
-                data-slide-index={currentIdx + 1}
-                style={{
-                  width: SLIDE_WIDTH,
-                  height: SLIDE_HEIGHT,
-                  position: "relative",
-                  overflow: "hidden",
-                }}
-                dangerouslySetInnerHTML={{ __html: sanitizeSlideHtml(currentSlide.html) }}
-              />
-            </div>
+              dangerouslySetInnerHTML={{ __html: sanitizeSlideHtml(currentSlide.html) }}
+            />
           </div>
 
           {/* 屏幕下方克制半透明翻页条 */}

@@ -254,7 +254,7 @@ export function PreviewPane() {
   return (
     <div className="flex flex-col h-full min-h-0 bg-[var(--bg-canvas)] border-l border-[var(--border-hairline)] relative">
       {/* 极简自适应顶栏：窄屏自动折行保护文件名始终可见 */}
-      <header className="min-h-11 py-1.5 shrink-0 px-3 border-b border-[var(--border-hairline)] bg-[var(--bg-surface)] flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 select-none">
+      <header className="@container min-h-11 py-1.5 shrink-0 px-3 border-b border-[var(--border-hairline)] bg-[var(--bg-surface)] flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 select-none">
         <div className="flex items-center gap-2 min-w-[120px] flex-1">
           <MonochromeFileIcon category={category} className="w-3.5 h-3.5" />
           <span
@@ -330,13 +330,28 @@ export function PreviewPane() {
           <button
             type="button"
             onClick={() => setPreviewExpanded(!previewExpanded)}
-            className="hidden md:inline-flex items-center justify-center w-7 h-7 rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-            title={previewExpanded ? "退出全屏展开" : "全屏展开文档台"}
+            className={`hidden md:inline-flex items-center gap-1 h-7 px-2 rounded-md border text-[11px] font-medium transition-colors whitespace-nowrap cursor-pointer ${
+              previewExpanded
+                ? "bg-[var(--accent-soft)] border-[var(--accent)]/45 text-[var(--text-primary)]"
+                : "border-[var(--border-hairline)] bg-[var(--bg-canvas)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            }`}
+            title={
+              previewExpanded
+                ? "还原为分栏视图"
+                : "全屏展开工作台，畅享完整原生 Office 工具栏"
+            }
+            aria-label={previewExpanded ? "还原分栏" : "展开编辑"}
           >
             {previewExpanded ? (
-              <Minimize2 className="w-3.5 h-3.5" />
+              <>
+                <Minimize2 className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden @[380px]:inline">还原分栏</span>
+              </>
             ) : (
-              <Maximize2 className="w-3.5 h-3.5" />
+              <>
+                <Maximize2 className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden @[380px]:inline">展开编辑</span>
+              </>
             )}
           </button>
 
@@ -414,8 +429,8 @@ export function PreviewPane() {
           }
         >
           {category === "excel" && <ExcelViewer path={activePreviewPath} bytes={bytes} />}
-          {category === "word" && <WordViewer bytes={bytes} />}
-          {category === "ppt" && <PptViewer bytes={bytes} />}
+          {category === "word" && <WordViewer path={activePreviewPath} bytes={bytes} />}
+          {category === "ppt" && <PptViewer path={activePreviewPath} bytes={bytes} />}
           {category === "slides" && <SlidesViewer path={activePreviewPath} bytes={bytes} />}
           {category === "pdf" && <PdfViewer bytes={bytes} />}
           {(category === "markdown" || category === "code" || category === "text") && (

@@ -1,4 +1,26 @@
-import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import {
+  PDFDict,
+  PDFDocument,
+  PDFHexString,
+  PDFName,
+  PDFNumber,
+  PDFOperator,
+  PDFOperatorNames,
+  PDFString,
+  StandardFonts,
+  TextRenderingMode,
+  beginText,
+  endText,
+  popGraphicsState,
+  pushGraphicsState,
+  rgb,
+  setFontAndSize,
+  setTextMatrix,
+  setTextRenderingMode,
+  type PDFFont,
+  type PDFPage,
+  type PDFRef,
+} from "pdf-lib";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 
@@ -217,6 +239,225 @@ function wrapTextCanvas(
   return out.length > 0 ? out : [""];
 }
 
+/** Canvas 渲染页面上的文本定位记录，用于映射 PDF 隐形可搜索文本层 */
+interface PdfCanvasTextRun {
+  text: string;
+  xPx: number;
+  yPx: number;
+  fontSizePx: number;
+  widthPx?: number;
+}
+
+/** 零外部字体依赖的 Identity-H Type0 + ToUnicode 隐形文本字体描述符 */
+interface HiddenUnicodeFont {
+  fontRef: PDFRef;
+  encodeRun: (text: string) => { hex: string; widthThousandths: number } | null;
+}
+
+/** 估算单个 Unicode 字符在标准千分制字宽体系下的参考宽度 */
+function estimateCharWidthThousandths(ch: string): number {
+  const code = ch.codePointAt(0) ?? 0;
+  if (code <= 0x7f) {
+    if (ch === " ") return 300;
+    if ("iIl1.,:;|!'`".includes(ch)) return 320;
+    if ("mMwW@%".includes(ch)) return 820;
+    return 540;
+  }
+  return 1000;
+}
+
+/** 将单个字符（含非 BMP 代理对）转换为大写 UTF-16BE Hex 串 */
+function toUtf16BeHex(ch: string): string {
+  let hex = "";
+  for (let i = 0; i < ch.length; i++) {
+    hex += ch.charCodeAt(i).toString(16).padStart(4, "0").toUpperCase();
+  }
+  return hex;
+}
+
+/**
+ * 为文档内所有 Canvas 文本构建一份无嵌入式字形的 Type0（Identity-H）+ ToUnicode CMap 字体，
+ * 使 pdfjs-dist 在不下载外部 CMap 或数 MB 中文字体文件的情况下也能精确提取与划选中英文正文。
+ */
+function buildHiddenUnicodeFont(
+  pdfDoc: PDFDocument,
+  allRuns: PdfCanvasTextRun[]
+): HiddenUnicodeFont | null {
+  const charToInfo = new Map<string, { cid: number; widthUnits: number }>();
+  const cidEntries: Array<{ cid: number; ch: string; widthUnits: number }> = [];
+  let nextCid = 1;
+
+  for (const run of allRuns) {
+    for (const ch of run.text) {
+      if (charToInfo.has(ch)) continue;
+      if (nextCid > 0xfffe) break;
+      const cid = nextCid++;
+      const widthUnits = estimateCharWidthThousandths(ch);
+      charToInfo.set(ch, { cid, widthUnits });
+      cidEntries.push({ cid, ch, widthUnits });
+    }
+  }
+
+  if (cidEntries.length === 0) return null;
+
+  const pdfCtx = pdfDoc.context;
+  const cmapParts: string[] = [
+    "/CIDInit /ProcSet findresource begin",
+    "12 dict begin",
+    "begincmap",
+    "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def",
+    "/CMapName /Adobe-Identity-UCS def",
+    "/CMapType 2 def",
+    "1 begincodespacerange",
+    "<0000> <FFFF>",
+    "endcodespacerange",
+  ];
+
+  // PDF ToUnicode CMap 规范要求每个 beginbfchar 块最多包含 100 条映射
+  for (let i = 0; i < cidEntries.length; i += 100) {
+    const chunk = cidEntries.slice(i, i + 100);
+    cmapParts.push(`${chunk.length} beginbfchar`);
+    for (const { cid, ch } of chunk) {
+      const cidHex = cid.toString(16).padStart(4, "0").toUpperCase();
+      cmapParts.push(`<${cidHex}> <${toUtf16BeHex(ch)}>`);
+    }
+    cmapParts.push("endbfchar");
+  }
+  cmapParts.push(
+    "endcmap",
+    "CMapName currentdict /CMap defineresource pop",
+    "end",
+    "end"
+  );
+
+  const cmapRef = pdfCtx.register(pdfCtx.flateStream(`${cmapParts.join("\n")}\n`));
+
+  const wArray = pdfCtx.obj([]);
+  for (const { cid, widthUnits } of cidEntries) {
+    wArray.push(PDFNumber.of(cid));
+    wArray.push(pdfCtx.obj([PDFNumber.of(widthUnits)]));
+  }
+
+  const cidFontRef = pdfCtx.register(
+    pdfCtx.obj({
+      Type: PDFName.of("Font"),
+      Subtype: PDFName.of("CIDFontType2"),
+      BaseFont: PDFName.of("MizurisuHidden"),
+      CIDSystemInfo: pdfCtx.obj({
+        Registry: PDFString.of("Adobe"),
+        Ordering: PDFString.of("Identity"),
+        Supplement: PDFNumber.of(0),
+      }),
+      FontDescriptor: pdfCtx.obj({
+        Type: PDFName.of("FontDescriptor"),
+        FontName: PDFName.of("MizurisuHidden"),
+        Flags: PDFNumber.of(4),
+        FontBBox: pdfCtx.obj([-1000, -300, 1000, 1000]),
+        ItalicAngle: PDFNumber.of(0),
+        Ascent: PDFNumber.of(880),
+        Descent: PDFNumber.of(-120),
+        CapHeight: PDFNumber.of(750),
+        StemV: PDFNumber.of(80),
+      }),
+      DW: PDFNumber.of(1000),
+      W: wArray,
+    })
+  );
+
+  const type0Ref = pdfCtx.register(
+    pdfCtx.obj({
+      Type: PDFName.of("Font"),
+      Subtype: PDFName.of("Type0"),
+      BaseFont: PDFName.of("MizurisuHidden"),
+      Encoding: PDFName.of("Identity-H"),
+      DescendantFonts: pdfCtx.obj([cidFontRef]),
+      ToUnicode: cmapRef,
+    })
+  );
+
+  return {
+    fontRef: type0Ref,
+    encodeRun: (text: string) => {
+      let hex = "";
+      let widthThousandths = 0;
+      for (const ch of text) {
+        const info = charToInfo.get(ch);
+        if (!info) continue;
+        hex += info.cid.toString(16).padStart(4, "0").toUpperCase();
+        widthThousandths += info.widthUnits;
+      }
+      if (!hex) return null;
+      return { hex, widthThousandths };
+    },
+  };
+}
+
+/** 向单页 PDF 叠加 3 Tr 不可见文本层，使光学页面具备精确中文检索与划选能力 */
+function appendInvisibleSearchableTextLayer(
+  page: PDFPage,
+  hiddenFont: HiddenUnicodeFont,
+  textRuns: PdfCanvasTextRun[],
+  scale: number,
+  pageHeightPt: number
+): void {
+  const pdfCtx = page.doc.context;
+  let resources = page.node.lookupMaybe(PDFName.of("Resources"), PDFDict);
+  if (!resources) {
+    resources = pdfCtx.obj({});
+    page.node.set(PDFName.of("Resources"), resources);
+  }
+  let fonts = resources.lookupMaybe(PDFName.of("Font"), PDFDict);
+  if (!fonts) {
+    fonts = pdfCtx.obj({});
+    resources.set(PDFName.of("Font"), fonts);
+  }
+  const fontKey = PDFName.of("F_MIZURISU_TXT");
+  fonts.set(fontKey, hiddenFont.fontRef);
+
+  const ops = [
+    pushGraphicsState(),
+    beginText(),
+    setTextRenderingMode(TextRenderingMode.Invisible),
+  ];
+
+  let currentTz = 100;
+  for (const run of textRuns) {
+    const encoded = hiddenFont.encodeRun(run.text);
+    if (!encoded) continue;
+
+    const fontSizePt = Math.max(1, run.fontSizePx * scale);
+    const xPt = run.xPx * scale;
+    const yPt = pageHeightPt - run.yPx * scale;
+
+    const expectedPt = fontSizePt * (encoded.widthThousandths / 1000);
+    let targetTz = 100;
+    if (run.widthPx && run.widthPx > 0 && expectedPt > 0) {
+      const ratio = ((run.widthPx * scale) / expectedPt) * 100;
+      if (Number.isFinite(ratio)) {
+        targetTz = Math.min(180, Math.max(40, Math.round(ratio * 10) / 10));
+      }
+    }
+
+    if (targetTz !== currentTz) {
+      ops.push(
+        PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [
+          PDFNumber.of(targetTz),
+        ])
+      );
+      currentTz = targetTz;
+    }
+
+    ops.push(
+      setFontAndSize(fontKey, fontSizePt),
+      setTextMatrix(1, 0, 0, 1, xPt, yPt),
+      PDFOperator.of(PDFOperatorNames.ShowText, [PDFHexString.of(encoded.hex)])
+    );
+  }
+
+  ops.push(endText(), popGraphicsState());
+  page.pushOperators(...ops);
+}
+
 /** 离屏 Canvas 高清渲染（支持中文、多级标题、列表、自动换行表格、分页与页眉页脚） */
 async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
@@ -231,7 +472,11 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
   const nextPageTopY = 136;
   const bottomLimit = pageH - 118;
 
-  const pages: Array<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }> = [];
+  const pages: Array<{
+    canvas: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    textRuns: PdfCanvasTextRun[];
+  }> = [];
 
   const createCanvasPage = (isFirst: boolean) => {
     const canvas = document.createElement("canvas");
@@ -240,18 +485,48 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
     const ctx = canvas.getContext("2d")!;
     ctx.fillStyle = "#FFFFFF";
     ctx.fillRect(0, 0, pageW, pageH);
-    pages.push({ canvas, ctx });
-    return { canvas, ctx, startY: isFirst ? firstPageTopY : nextPageTopY };
+    const textRuns: PdfCanvasTextRun[] = [];
+    pages.push({ canvas, ctx, textRuns });
+    return {
+      canvas,
+      ctx,
+      textRuns,
+      startY: isFirst ? firstPageTopY : nextPageTopY,
+    };
+  };
+
+  /** 在 Canvas 绘制文字并同步登记隐形可搜索文本层位置 */
+  const drawCanvasText = (
+    targetCtx: CanvasRenderingContext2D,
+    runs: PdfCanvasTextRun[],
+    text: string,
+    xPx: number,
+    yPx: number,
+    fontSizePx: number,
+    maxTextWidth?: number
+  ) => {
+    if (maxTextWidth !== undefined) {
+      targetCtx.fillText(text, xPx, yPx, maxTextWidth);
+    } else {
+      targetCtx.fillText(text, xPx, yPx);
+    }
+    if (!text.trim()) return;
+    const measured = targetCtx.measureText(text).width;
+    const widthPx =
+      maxTextWidth !== undefined && measured > maxTextWidth ? maxTextWidth : measured;
+    runs.push({ text, xPx, yPx, fontSizePx, widthPx });
   };
 
   let current = createCanvasPage(true);
   let ctx = current.ctx;
+  let currentRuns = current.textRuns;
   let y = current.startY;
   let pageStartY = current.startY;
 
   const startNewPage = () => {
     current = createCanvasPage(false);
     ctx = current.ctx;
+    currentRuns = current.textRuns;
     y = current.startY;
     pageStartY = current.startY;
   };
@@ -267,7 +542,7 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
   ctx.font = 'bold 42px "PingFang SC", "Microsoft YaHei", sans-serif';
   const titleLines = wrapTextCanvas(ctx, spec.title, maxWidth);
   for (const line of titleLines) {
-    ctx.fillText(line, marginX, y);
+    drawCanvasText(ctx, currentRuns, line, marginX, y, 42);
     y += 54;
   }
 
@@ -276,7 +551,7 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
     ctx.font = '24px "PingFang SC", "Microsoft YaHei", sans-serif';
     const subLines = wrapTextCanvas(ctx, spec.subtitle, maxWidth);
     for (const line of subLines) {
-      ctx.fillText(line, marginX, y);
+      drawCanvasText(ctx, currentRuns, line, marginX, y, 24);
       y += 34;
     }
     y += 10;
@@ -311,7 +586,7 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
         ensureSpace(lineHeight);
         ctx.font = `bold ${fontSize}px ${fontFamily}`;
         ctx.fillStyle = level === 1 ? "#1E1B4B" : level === 2 ? "#1E293B" : "#334155";
-        ctx.fillText(line, marginX, y);
+        drawCanvasText(ctx, currentRuns, line, marginX, y, fontSize);
         y += lineHeight;
       }
       y += spaceAfter;
@@ -328,7 +603,7 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
         ctx.font = `25px ${fontFamily}`;
         ctx.fillStyle = "#1E293B";
         if (line) {
-          ctx.fillText(line, marginX, y);
+          drawCanvasText(ctx, currentRuns, line, marginX, y, 25);
         }
         y += lineHeight;
       }
@@ -347,10 +622,10 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
           ctx.font = `24px ${fontFamily}`;
           ctx.fillStyle = "#4F46E5";
           if (idx === 0) {
-            ctx.fillText("•", marginX + 12, y);
+            drawCanvasText(ctx, currentRuns, "•", marginX + 12, y, 24);
           }
           ctx.fillStyle = "#1E293B";
-          ctx.fillText(line, marginX + bulletIndent, y);
+          drawCanvasText(ctx, currentRuns, line, marginX + bulletIndent, y, 24);
           y += lineHeight;
         });
         y += 6;
@@ -434,7 +709,7 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
           const cellLines = wrappedCells[c];
           for (let li = 0; li < cellLines.length; li++) {
             const textY = drawTop + cellPadY + cellFontSize + li * cellLineHeight;
-            ctx.fillText(cellLines[li], x + cellPadX, textY);
+            drawCanvasText(ctx, currentRuns, cellLines[li], x + cellPadX, textY, cellFontSize);
           }
           x += w;
         }
@@ -462,11 +737,11 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
   // 在全部页面绘制统一的页眉（第 2 页起）与页脚页码
   const totalPages = pages.length;
   const footerLabel = spec.footerText?.trim() || "Mizurisu Agent";
-  pages.forEach(({ ctx: pCtx }, idx) => {
+  pages.forEach(({ ctx: pCtx, textRuns: pRuns }, idx) => {
     if (idx > 0) {
       pCtx.font = `20px ${fontFamily}`;
       pCtx.fillStyle = "#94A3B8";
-      pCtx.fillText(spec.title, marginX, 64, maxWidth - 160);
+      drawCanvasText(pCtx, pRuns, spec.title, marginX, 64, 20, maxWidth - 160);
       pCtx.strokeStyle = "#E2E8F0";
       pCtx.lineWidth = 1.5;
       pCtx.beginPath();
@@ -484,15 +759,19 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
 
     pCtx.font = `20px ${fontFamily}`;
     pCtx.fillStyle = "#64748B";
-    pCtx.fillText(footerLabel, marginX, pageH - 46, maxWidth - 220);
+    drawCanvasText(pCtx, pRuns, footerLabel, marginX, pageH - 46, 20, maxWidth - 220);
 
     const pageStr = `第 ${idx + 1} / ${totalPages} 页`;
     const pageStrWidth = pCtx.measureText(pageStr).width;
-    pCtx.fillText(pageStr, pageW - marginX - pageStrWidth, pageH - 46);
+    drawCanvasText(pCtx, pRuns, pageStr, pageW - marginX - pageStrWidth, pageH - 46, 20);
   });
 
-  // 统一将所有 Canvas 转为 PNG 并写入 PDF
-  for (const { canvas: pageCanvas } of pages) {
+  const allRuns = pages.flatMap((p) => p.textRuns);
+  const hiddenFont = buildHiddenUnicodeFont(pdfDoc, allRuns);
+  const scale = 595 / pageW;
+
+  // 统一将所有 Canvas 转为 PNG 并写入 PDF，同步注入隐形中文可搜索文本层
+  for (const { canvas: pageCanvas, textRuns } of pages) {
     const dataUrl = pageCanvas.toDataURL("image/png");
     const base64 = dataUrl.split(",")[1];
     const bin = atob(base64);
@@ -501,6 +780,9 @@ async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array>
     const pngImage = await pdfDoc.embedPng(pngBytes);
     const page = pdfDoc.addPage([595, 842]);
     page.drawImage(pngImage, { x: 0, y: 0, width: 595, height: 842 });
+    if (hiddenFont && textRuns.length > 0) {
+      appendInvisibleSearchableTextLayer(page, hiddenFont, textRuns, scale, 842);
+    }
   }
 
   const saved = await pdfDoc.save();

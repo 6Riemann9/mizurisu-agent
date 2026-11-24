@@ -1,5 +1,6 @@
 import { FileText, FolderKanban, MessageSquare, Settings } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { kvGet, kvSet } from "../../storage/db";
 import { useAppStore } from "../../store/useAppStore";
 import { LoginView } from "../auth/LoginView";
 import { ApprovalDialog } from "../chat/ApprovalDialog";
@@ -11,7 +12,20 @@ import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
 const MIN_PREVIEW_WIDTH = 340;
-const MAX_PREVIEW_WIDTH = 960;
+const MIN_CHAT_WIDTH = 320;
+const SIDEBAR_WIDTH = 240;
+const RESIZER_WIDTH = 4;
+const DEFAULT_PREVIEW_WIDTH = 520;
+const WIDE_DEFAULT_PREVIEW_WIDTH = 600;
+const PREVIEW_WIDTH_CUSTOMIZED_KEY = "preview_width_customized";
+
+function getDefaultPreviewWidth(viewportWidth: number): number {
+  return viewportWidth >= 1440 ? WIDE_DEFAULT_PREVIEW_WIDTH : DEFAULT_PREVIEW_WIDTH;
+}
+
+function getMaxPreviewWidth(viewportWidth: number): number {
+  return Math.max(520, viewportWidth - MIN_CHAT_WIDTH);
+}
 
 function clampPreviewWidth(
   width: number,
@@ -20,9 +34,11 @@ function clampPreviewWidth(
 ): number {
   const effectiveViewport =
     viewportWidth ?? (typeof window !== "undefined" ? window.innerWidth : 1280);
-  const reservedWidth = sidebarOpen ? 500 : 340;
+  const dynamicMax = getMaxPreviewWidth(effectiveViewport);
+  const reservedWidth =
+    (sidebarOpen ? SIDEBAR_WIDTH : 0) + MIN_CHAT_WIDTH + RESIZER_WIDTH;
   const maxAllowed = Math.min(
-    MAX_PREVIEW_WIDTH,
+    dynamicMax,
     Math.max(MIN_PREVIEW_WIDTH, effectiveViewport - reservedWidth)
   );
   return Math.round(Math.min(Math.max(width, MIN_PREVIEW_WIDTH), maxAllowed));
@@ -44,6 +60,7 @@ export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [externalDraft, setExternalDraft] = useState<string | undefined>(undefined);
   const [draggingWidth, setDraggingWidth] = useState<number | null>(null);
+  const [hasCustomPreviewWidth, setHasCustomPreviewWidth] = useState(false);
   const [viewportWidth, setViewportWidth] = useState<number>(() =>
     typeof window !== "undefined" ? window.innerWidth : 1280
   );
@@ -55,10 +72,35 @@ export function AppShell() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  // 检查用户是否曾显式拖拽调整过右侧工作台宽度（未调整时在 1440px+ 大屏默认给足 600px）
+  useEffect(() => {
+    let cancelled = false;
+    kvGet<boolean>(PREVIEW_WIDTH_CUSTOMIZED_KEY)
+      .then((customized) => {
+        if (!cancelled) {
+          setHasCustomPreviewWidth(Boolean(customized));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [authSession, settings.previewWidth]);
+
+  const hasSavedCustomWidth =
+    hasCustomPreviewWidth ||
+    (typeof settings.previewWidth === "number" &&
+      settings.previewWidth > 0 &&
+      settings.previewWidth !== DEFAULT_PREVIEW_WIDTH);
+
+  const preferredPreviewWidth = hasSavedCustomWidth
+    ? settings.previewWidth
+    : getDefaultPreviewWidth(viewportWidth);
+
   const startResize = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       e.preventDefault();
-      const initialWidth = settings.previewWidth || 520;
+      const initialWidth = preferredPreviewWidth;
       let latestWidth = clampPreviewWidth(initialWidth, viewportWidth, sidebarOpen);
       setDraggingWidth(latestWidth);
 
@@ -82,13 +124,15 @@ export function AppShell() {
         document.body.style.cursor = prevCursor;
         document.body.style.userSelect = prevSelect;
         setDraggingWidth(null);
+        setHasCustomPreviewWidth(true);
+        kvSet(PREVIEW_WIDTH_CUSTOMIZED_KEY, true).catch(() => undefined);
         updateSettings({ previewWidth: latestWidth }).catch(() => undefined);
       };
 
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     },
-    [settings.previewWidth, sidebarOpen, updateSettings, viewportWidth]
+    [preferredPreviewWidth, sidebarOpen, updateSettings, viewportWidth]
   );
 
   useEffect(() => {
@@ -108,7 +152,7 @@ export function AppShell() {
   };
 
   const effectivePreviewWidth = clampPreviewWidth(
-    draggingWidth ?? settings.previewWidth ?? 520,
+    draggingWidth ?? preferredPreviewWidth,
     viewportWidth,
     sidebarOpen
   );

@@ -12,6 +12,7 @@ import {
   MessageSquare,
   MessageSquarePlus,
   Pencil,
+  Plus,
   RefreshCw,
   Search,
   Settings,
@@ -24,10 +25,36 @@ import { useEffect, useRef, useState } from "react";
 import { BUILTIN_SKILLS } from "../../agent/skills";
 import { formatQuotaDisplay, maskApiKey } from "../../newapi/auth";
 import { getMizurisuConsoleLinks } from "../../newapi/client";
+import {
+  buildSlidesHtmlDocument,
+  createExcelWorkbook,
+  createWordDocument,
+} from "../../office";
 import { getPlatformAdapter } from "../../platform";
+import { workspaceVfs } from "../../storage/workspace-vfs";
 import { useAppStore } from "../../store/useAppStore";
 import type { ChatSession, WorkspaceFileMeta } from "../../types";
 import { FileIcon, formatFileSize } from "../common/FileBadge";
+
+/** 生成工作区不重名的目标文件路径（如 新建表格.xlsx -> 新建表格_2.xlsx） */
+async function resolveUniqueWorkspacePath(
+  baseName: string,
+  ext: string
+): Promise<string> {
+  const initialPath = `${baseName}${ext}`;
+  if (!(await workspaceVfs.exists(initialPath))) {
+    return initialPath;
+  }
+  let index = 2;
+  while (index < 1000) {
+    const candidate = `${baseName}_${index}${ext}`;
+    if (!(await workspaceVfs.exists(candidate))) {
+      return candidate;
+    }
+    index += 1;
+  }
+  return `${baseName}_${Date.now()}${ext}`;
+}
 
 export function Sidebar({
   className = "",
@@ -38,6 +65,7 @@ export function Sidebar({
 }) {
   const {
     config,
+    settings,
     billing,
     billingLoading,
     authSession,
@@ -69,10 +97,13 @@ export function Sidebar({
   } = useAppStore();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const createMenuRef = useRef<HTMLDivElement>(null);
   const [filesOpen, setFilesOpen] = useState(true);
   const [chatsOpen, setChatsOpen] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(true);
   const [dragOverFiles, setDragOverFiles] = useState(false);
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [creatingDoc, setCreatingDoc] = useState(false);
 
   // 工作区搜索、ZIP 导出、防误删二次确认与文件/会话行内重命名状态
   const [fileQuery, setFileQuery] = useState("");
@@ -93,6 +124,200 @@ export function Sidebar({
       }
     };
   }, []);
+
+  // 点击外部或按 Esc 时关闭新建文档下拉菜单
+  useEffect(() => {
+    if (!createMenuOpen) return;
+    const handleMouseDown = (e: MouseEvent) => {
+      if (createMenuRef.current && !createMenuRef.current.contains(e.target as Node)) {
+        setCreateMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setCreateMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleMouseDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleMouseDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [createMenuOpen]);
+
+  /** 一键新建工作区 Office / Markdown 文档并立即在右侧工作台打开 */
+  const handleCreateDocument = async (
+    kind: "excel" | "word" | "slides" | "markdown"
+  ) => {
+    if (creatingDoc) return;
+    setCreateMenuOpen(false);
+    setCreatingDoc(true);
+    try {
+      let newPath = "";
+      if (kind === "excel") {
+        newPath = await resolveUniqueWorkspacePath("新建表格", ".xlsx");
+        const bytes = await createExcelWorkbook({
+          sheets: [
+            {
+              name: "工作表1",
+              headers: ["项目", "负责人", "金额", "状态"],
+              rows: [
+                ["示例项目 A", "张三", 12800, "进行中"],
+                ["示例项目 B", "李四", 24600, "已完成"],
+                ["合计", "-", { formula: "SUM(C2:C3)", result: 37400 }, "汇总"],
+              ],
+              freezeHeader: true,
+              columnWidths: [20, 14, 16, 14],
+              numberFormats: { 2: "#,##0.00" },
+            },
+          ],
+        });
+        await workspaceVfs.writeBytes(newPath, bytes, {
+          snapshotNote: "新建 Excel 表格",
+        });
+      } else if (kind === "word") {
+        newPath = await resolveUniqueWorkspacePath("新建文档", ".docx");
+        const docTitle = newPath.replace(/\.docx$/i, "");
+        const bytes = await createWordDocument({
+          title: docTitle,
+          subtitle: "Mizurisu Agent 协同文档 · 支持在线排版与导出",
+          headerText: docTitle,
+          showPageNumbers: true,
+          blocks: [
+            { type: "heading", level: 2, text: "一、背景与目标" },
+            {
+              type: "paragraph",
+              text: "在此补充文档背景、核心目标或工作进展，也可以在左侧对话区让 AI 协助扩写与润色。",
+            },
+            { type: "heading", level: 2, text: "二、任务清单" },
+            {
+              type: "table",
+              headers: ["事项", "负责人", "时间节点", "备注"],
+              rows: [
+                ["", "", "", ""],
+                ["", "", "", ""],
+              ],
+            },
+            { type: "heading", level: 2, text: "三、结论与下一步" },
+            {
+              type: "paragraph",
+              text: "在此填写阶段总结与下一步计划。",
+            },
+          ],
+        });
+        await workspaceVfs.writeBytes(newPath, bytes, {
+          snapshotNote: "新建 Word 文档",
+        });
+      } else if (kind === "slides") {
+        newPath = await resolveUniqueWorkspacePath("新建演示", ".slides.html");
+        const deckTitle = newPath.replace(/\.slides\.html$/i, "");
+        const themeId =
+          settings.theme === "light" ? "consulting-exec" : "linear-dark";
+        const html = buildSlidesHtmlDocument({
+          title: deckTitle,
+          theme: themeId,
+          slides: [
+            {
+              title: deckTitle,
+              notes: "封面页：开启顶部「双击改字」即可直接编辑标题与要点。",
+              html: `
+<div class="cover-stage">
+  <div class="badge-row">
+    <div class="badge is-accent">PRESENTATION DECK</div>
+    <div class="badge">Mizurisu Agent</div>
+  </div>
+  <div class="cover-hero">
+    <div class="slide-kicker">EXECUTIVE OVERVIEW</div>
+    <h1 class="slide-h1">${deckTitle}</h1>
+    <p class="slide-subtitle">在此输入汇报副标题与核心观点，支持 5 套主题切换与原生 PPTX 导出</p>
+  </div>
+  <div class="cover-meta-grid">
+    <div class="cover-meta-card">
+      <span class="kpi-label">汇报团队</span>
+      <span class="cover-meta-value">产品与运营</span>
+      <span class="kpi-sub">双击舞台文字即可就地修改</span>
+    </div>
+    <div class="cover-meta-card">
+      <span class="kpi-label">目标指标</span>
+      <span class="cover-meta-value is-success">+24.0%</span>
+      <span class="kpi-sub">支持连接工作区数据自动生成</span>
+    </div>
+    <div class="cover-meta-card">
+      <span class="kpi-label">交付格式</span>
+      <span class="cover-meta-value is-accent">PPTX</span>
+      <span class="kpi-sub">1280×720 无损比例导出</span>
+    </div>
+  </div>
+</div>`,
+            },
+            {
+              title: "核心议题与推进计划",
+              notes: "内容页：对比展示现状洞察与下一步行动。",
+              html: `
+<div class="slide-header">
+  <div class="slide-header-main">
+    <div class="slide-kicker">KEY HIGHLIGHTS</div>
+    <h2 class="slide-h2">核心议题与行动要点</h2>
+  </div>
+  <div class="badge-row">
+    <div class="badge is-accent">02 / 02</div>
+  </div>
+</div>
+<div class="slide-body">
+  <div class="cols-2">
+    <div class="bento-card is-accent">
+      <div class="card-title">一、现状洞察</div>
+      <ul>
+        <li>总结当前业务亮点与关键数据表现</li>
+        <li>梳理现阶段待解决的核心问题</li>
+        <li>结合工作区表格输出量化依据</li>
+      </ul>
+    </div>
+    <div class="bento-card">
+      <div class="card-title">二、下一步计划</div>
+      <ul>
+        <li>明确关键里程碑与交付时间线</li>
+        <li>落实责任分工与协作节奏</li>
+        <li>设定可追踪的阶段验收标准</li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout-strip">
+    <span><strong>提示：</strong>点击顶部「双击改字」可直接改写本页内容，完成后可一键导出原生 .pptx。</span>
+    <span class="badge">可编辑模板</span>
+  </div>
+</div>
+<div class="slide-footer">
+  <span>${deckTitle}</span>
+  <span>02 / 02</span>
+</div>`,
+            },
+          ],
+        });
+        await workspaceVfs.writeText(newPath, html, {
+          snapshotNote: "新建幻灯片模板",
+        });
+      } else {
+        newPath = await resolveUniqueWorkspacePath("新建笔记", ".md");
+        await workspaceVfs.writeText(newPath, "# 标题\n\n", {
+          snapshotNote: "新建 Markdown 文档",
+        });
+      }
+
+      setFilesOpen(true);
+      openPreview(newPath);
+      pushToast(`已创建 ${newPath}`, "success");
+    } catch (err) {
+      pushToast(
+        `创建文档失败：${err instanceof Error ? err.message : String(err)}`,
+        "error"
+      );
+    } finally {
+      setCreatingDoc(false);
+    }
+  };
 
   const clearDeleteConfirm = () => {
     if (confirmDeleteTimerRef.current) {
@@ -352,7 +577,7 @@ export function Sidebar({
         >
           <div
             onClick={() => setFilesOpen((v) => !v)}
-            className="h-6 px-1.5 flex items-center justify-between text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] cursor-pointer"
+            className="h-6 px-1.5 flex items-center justify-between gap-1 text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] cursor-pointer"
           >
             <div className="flex items-center gap-1 min-w-0">
               {filesOpen ? (
@@ -360,13 +585,35 @@ export function Sidebar({
               ) : (
                 <ChevronRight className="w-3 h-3 shrink-0" />
               )}
-              <span>工作区文件</span>
-              <span className="tabular-nums text-[10px] opacity-75">({files.length})</span>
+              <span className="truncate">工作区文件</span>
+              <span className="tabular-nums text-[10px] opacity-75 shrink-0">({files.length})</span>
             </div>
             <div
-              className="flex items-center gap-0.5 shrink-0"
+              ref={createMenuRef}
+              className="relative flex items-center gap-0.5 shrink-0"
               onClick={(e) => e.stopPropagation()}
             >
+              <button
+                type="button"
+                disabled={creatingDoc}
+                onClick={() => setCreateMenuOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={createMenuOpen}
+                aria-label="新建文档"
+                title="新建 Excel / Word / 幻灯片 / Markdown"
+                className={`h-5 px-1.5 rounded inline-flex items-center gap-0.5 text-[11px] font-medium transition cursor-pointer whitespace-nowrap disabled:opacity-50 ${
+                  createMenuOpen
+                    ? "bg-[var(--bg-active)] text-[var(--text-primary)]"
+                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                }`}
+              >
+                {creatingDoc ? (
+                  <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                ) : (
+                  <Plus className="w-3 h-3 shrink-0" />
+                )}
+                <span>新建</span>
+              </button>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -406,6 +653,62 @@ export function Sidebar({
                 >
                   <FolderOpen className="w-3 h-3" />
                 </button>
+              )}
+
+              {createMenuOpen && (
+                <div
+                  role="menu"
+                  aria-label="新建文档类型"
+                  className="absolute right-0 top-6 w-48 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-elevated)] shadow-xl z-30 py-1 overflow-hidden"
+                >
+                  <div className="px-2.5 py-1 text-[10px] font-medium text-[var(--text-muted)] border-b border-[var(--border-hairline)]">
+                    新建工作区文档
+                  </div>
+                  {(
+                    [
+                      {
+                        kind: "excel",
+                        category: "excel",
+                        label: "Excel 表格",
+                        ext: ".xlsx",
+                      },
+                      {
+                        kind: "word",
+                        category: "word",
+                        label: "Word 文档",
+                        ext: ".docx",
+                      },
+                      {
+                        kind: "slides",
+                        category: "slides",
+                        label: "高颜值幻灯片",
+                        ext: ".slides.html",
+                      },
+                      {
+                        kind: "markdown",
+                        category: "markdown",
+                        label: "Markdown 文档",
+                        ext: ".md",
+                      },
+                    ] as const
+                  ).map((item) => (
+                    <button
+                      key={item.kind}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => void handleCreateDocument(item.kind)}
+                      className="w-full px-2.5 py-1.5 flex items-center justify-between gap-2 text-left text-[12px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2 min-w-0">
+                        <FileIcon category={item.category} className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                      </span>
+                      <span className="text-[10px] font-mono text-[var(--text-muted)] shrink-0">
+                        {item.ext}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
           </div>

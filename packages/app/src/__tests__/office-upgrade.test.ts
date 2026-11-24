@@ -363,6 +363,14 @@ describe("Office 升级、打包导出与工作区增强", () => {
       expect(String.fromCharCode(...pdfBytes.slice(0, 5))).toBe("%PDF-");
       const parsed = await readPdfDocument(pdfBytes);
       expect(parsed.pageCount).toBeGreaterThanOrEqual(2);
+      expect(parsed.pages[0].text).toContain("中文客户交付审计报告");
+      expect(parsed.pages[0].text).toContain("一、核心发现");
+      expect(parsed.pages[0].text).toContain("本季度各项指标均符合预期要求。");
+      expect(parsed.pages[0].text).toContain("Mizurisu 客户专属交付件");
+      expect(parsed.pages[0].text).toContain(`第 1 / ${parsed.pageCount} 页`);
+      const lastPageText = parsed.pages[parsed.pageCount - 1].text;
+      expect(lastPageText).toContain("项目30");
+      expect(lastPageText).toContain(`第 ${parsed.pageCount} / ${parsed.pageCount} 页`);
       expect(drawnTexts).toContain("中文客户交付审计报告");
       expect(drawnTexts).toContain("一、核心发现");
       expect(drawnTexts).toContain("Mizurisu 客户专属交付件");
