@@ -1,7 +1,9 @@
 import {
+  AlertTriangle,
   Check,
   Database,
   Download,
+  ExternalLink,
   Eye,
   EyeOff,
   KeyRound,
@@ -20,6 +22,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { BUILTIN_SKILLS } from "../../agent/skills";
 import { formatQuotaDisplay, maskApiKey } from "../../newapi/auth";
+import { getMizurisuConsoleLinks } from "../../newapi/client";
 import { getPlatformAdapter } from "../../platform";
 import {
   exportBackupBundle,
@@ -60,6 +63,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
     saveCustomSkill,
     deleteCustomSkill,
     resetAllData,
+    pushToast,
   } = useAppStore();
 
   const [tab, setTab] = useState<SettingsTab>("account");
@@ -69,6 +73,12 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
   const [newTokenName, setNewTokenName] = useState("Mizurisu Agent");
   const [tokenNotice, setTokenNotice] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
+  const [checkingConnection, setCheckingConnection] = useState(false);
+  const [promptDraft, setPromptDraft] = useState(settings.customSystemPrompt ?? "");
+  const [promptSavedNotice, setPromptSavedNotice] = useState(false);
+  const [redactSecrets, setRedactSecrets] = useState(true);
+  const [confirmSecretExport, setConfirmSecretExport] = useState(false);
+  const [exportingBackup, setExportingBackup] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
 
   const [skillName, setSkillName] = useState("");
@@ -78,6 +88,38 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
 
   const importRef = useRef<HTMLInputElement>(null);
   const siteStatus = authSession?.siteStatus;
+  const consoleLinks = getMizurisuConsoleLinks(authSession?.baseUrl || config.baseUrl);
+
+  useEffect(() => {
+    setPromptDraft(settings.customSystemPrompt ?? "");
+  }, [settings.customSystemPrompt]);
+
+  const handleRefreshAndCheck = async () => {
+    if (checkingConnection) return;
+    setTokenNotice(null);
+    setTokenError(null);
+    setCheckingConnection(true);
+    try {
+      await refreshAccountSession();
+      if (authSession?.mode === "account") {
+        const synced = await testConnectionAndSync();
+        const msg = `连接检测通过，账户会话正常（已同步 ${synced.length} 个模型）`;
+        setTokenNotice(msg);
+        pushToast(msg, "success");
+      } else {
+        const syncedCount = useAppStore.getState().models.length;
+        const msg = `连接检测通过（已同步 ${syncedCount} 个模型）`;
+        setTokenNotice(msg);
+        pushToast(msg, "success");
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setTokenError(msg);
+      pushToast(`连接检测失败：${msg}`, "error");
+    } finally {
+      setCheckingConnection(false);
+    }
+  };
 
   const handleTest = async () => {
     setTestSuccessMsg(null);
@@ -131,6 +173,25 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
     }
   };
 
+  const handleSaveCustomPrompt = async (onlyIfDirty = false) => {
+    const persisted = settings.customSystemPrompt ?? "";
+    if (onlyIfDirty && promptDraft === persisted) {
+      return;
+    }
+    try {
+      await updateSettings({
+        customSystemPrompt: promptDraft,
+      });
+      setPromptSavedNotice(true);
+      pushToast("自定义办公指令已保存", "success");
+    } catch (err) {
+      pushToast(
+        `保存办公指令失败：${err instanceof Error ? err.message : String(err)}`,
+        "error"
+      );
+    }
+  };
+
   const handleAddSkill = async () => {
     if (!skillName.trim() || !skillPrompt.trim()) return;
     const skill: SkillTemplate = {
@@ -149,14 +210,41 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
     setSkillHint("");
   };
 
-  const handleExportBackup = async () => {
-    const bundle = await exportBackupBundle();
-    const bytes = new TextEncoder().encode(JSON.stringify(bundle, null, 2));
-    await getPlatformAdapter().exportFile(
-      `mizurisu-agent-backup-${new Date().toISOString().slice(0, 10)}.json`,
-      bytes,
-      "application/json"
-    );
+  const runExportBackup = async (includeSecrets: boolean) => {
+    if (exportingBackup) return;
+    setExportingBackup(true);
+    try {
+      const bundle = await exportBackupBundle({ includeSecrets });
+      const bytes = new TextEncoder().encode(JSON.stringify(bundle, null, 2));
+      const filename = `mizurisu-agent-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      await getPlatformAdapter().exportFile(
+        filename,
+        bytes,
+        "application/json"
+      );
+      setConfirmSecretExport(false);
+      pushToast(
+        includeSecrets
+          ? `已导出完整备份（含 API Key，请妥善保管）：${filename}`
+          : `已导出安全脱敏备份（不含 API Key）：${filename}`,
+        includeSecrets ? "warning" : "success"
+      );
+    } catch (err) {
+      pushToast(
+        `导出备份失败：${err instanceof Error ? err.message : String(err)}`,
+        "error"
+      );
+    } finally {
+      setExportingBackup(false);
+    }
+  };
+
+  const handleExportBackupClick = () => {
+    if (redactSecrets) {
+      void runExportBackup(false);
+      return;
+    }
+    setConfirmSecretExport(true);
   };
 
   const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -166,9 +254,13 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
       const text = await file.text();
       const parsed = JSON.parse(text) as BackupBundle;
       await importBackupBundle(parsed);
+      pushToast("备份恢复成功，正在重载工作台…", "success");
       window.location.reload();
     } catch (err) {
-      alert(`导入备份失败: ${err instanceof Error ? err.message : String(err)}`);
+      pushToast(
+        `导入备份失败：${err instanceof Error ? err.message : String(err)}`,
+        "error"
+      );
     } finally {
       e.target.value = "";
     }
@@ -244,12 +336,12 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-5 text-[12px]">
+        <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-4 sm:p-5 space-y-5 text-[12px]">
           {/* Tab 1: 账号与令牌 */}
           {tab === "account" && (
             <>
               <section className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] p-4 space-y-3">
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="space-y-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span
@@ -282,20 +374,16 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                     {authSession && authSession.mode !== "guest" && (
                       <button
                         type="button"
-                        disabled={authBusy}
-                        onClick={() => {
-                          setTokenNotice(null);
-                          setTokenError(null);
-                          refreshAccountSession().catch((err: unknown) => {
-                            setTokenError(err instanceof Error ? err.message : String(err));
-                          });
-                        }}
+                        disabled={authBusy || checkingConnection}
+                        onClick={() => void handleRefreshAndCheck()}
                         className="h-7 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] inline-flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition cursor-pointer disabled:opacity-50"
                       >
                         <RefreshCw
-                          className={`w-3 h-3 ${authBusy ? "animate-spin" : ""}`}
+                          className={`w-3 h-3 ${
+                            authBusy || checkingConnection ? "animate-spin" : ""
+                          }`}
                         />
-                        <span>刷新</span>
+                        <span>刷新并检测连接</span>
                       </button>
                     )}
                     <button
@@ -483,17 +571,72 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                 </section>
               )}
 
-              <section className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] p-3.5 space-y-1.5">
-                <div className="text-[11px] font-medium text-[var(--text-primary)]">
-                  Mizurisu 后台一键免登接入（站长参考）
+              <section className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] p-3.5 space-y-2.5">
+                <div>
+                  <div className="text-[12px] font-semibold text-[var(--text-primary)]">
+                    Mizurisu 站点控制台直达
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                    前往中转站网页端管理令牌密钥、在线充值额度或查看 API 调用消耗明细
+                  </p>
                 </div>
-                <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
-                  将构建产物部署在站点同域名子路径（如 <code className="font-mono">/agent/</code>）可自动复用登录 Cookie 免登；也可在后台快捷聊天入口填入下方模板实现点击直达并自动擦除地址栏参数：
-                </p>
-                <div className="px-2.5 py-1.5 rounded bg-[var(--bg-surface)] border border-[var(--border-hairline)] font-mono text-[10px] text-[var(--text-secondary)] select-all break-all">
-                  https://www.mizurisu.com/agent/#key=&#123;key&#125;&amp;address=&#123;address&#125;
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {[
+                    {
+                      label: "站点控制台主页",
+                      desc: "账户总览与站点公告",
+                      href: consoleLinks.homeUrl,
+                    },
+                    {
+                      label: "令牌管理页",
+                      desc: "创建、禁用或复制密钥 (/console/token)",
+                      href: consoleLinks.tokenUrl,
+                    },
+                    {
+                      label: "额度充值页",
+                      desc: "在线充值或兑换额度 (/console/topup)",
+                      href: consoleLinks.topupUrl,
+                    },
+                    {
+                      label: "调用日志页",
+                      desc: "核对消费记录与请求详情 (/console/log)",
+                      href: consoleLinks.logUrl,
+                    },
+                  ].map((item) => (
+                    <a
+                      key={item.label}
+                      href={item.href}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 py-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] flex items-center justify-between gap-2 transition"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium text-[var(--text-primary)] truncate">
+                          {item.label}
+                        </div>
+                        <div className="text-[10px] text-[var(--text-muted)] truncate mt-0.5">
+                          {item.desc}
+                        </div>
+                      </div>
+                      <ExternalLink className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
+                    </a>
+                  ))}
                 </div>
               </section>
+
+              <details className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] p-3.5">
+                <summary className="text-[11px] font-medium text-[var(--text-secondary)] cursor-pointer select-none">
+                  站点部署与免登集成参考（管理员）
+                </summary>
+                <div className="mt-2 space-y-1.5">
+                  <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
+                    将构建产物部署在站点同域名子路径（如 <code className="font-mono">/agent/</code>）可自动复用登录 Cookie 免登；也可在后台快捷聊天入口填入下方模板实现点击直达并自动擦除地址栏参数：
+                  </p>
+                  <div className="px-2.5 py-1.5 rounded bg-[var(--bg-surface)] border border-[var(--border-hairline)] font-mono text-[10px] text-[var(--text-secondary)] select-all break-all">
+                    https://www.mizurisu.com/agent/#key=&#123;key&#125;&amp;address=&#123;address&#125;
+                  </div>
+                </div>
+              </details>
             </>
           )}
 
@@ -514,12 +657,12 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
 
               <div className="space-y-1.5">
                 <label className="block font-medium text-[var(--text-secondary)]">
-                  New-API 站点地址 (Base URL)
+                  Mizurisu / 服务站点地址 (Base URL)
                 </label>
                 <input
                   value={config.baseUrl}
                   onChange={(e) => updateConfig({ baseUrl: e.target.value })}
-                  placeholder="https://your-newapi-domain.com"
+                  placeholder="https://www.mizurisu.com"
                   className="w-full h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)] font-mono"
                 />
                 <p className="text-[11px] text-[var(--text-muted)]">
@@ -559,7 +702,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                       [
                         "compatible",
                         "OpenAI 全兼容模式 (推荐)",
-                        "全部模型走 /v1/chat/completions，兼容标准 New-API 渠道。",
+                        "全部模型走 /v1/chat/completions，兼容 Mizurisu 及标准中转服务渠道。",
                       ],
                       [
                         "auto",
@@ -622,7 +765,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                   <div>{modelsError}</div>
                   {getPlatformAdapter().kind === "web" && (
                     <p className="text-[11px] text-[var(--text-muted)]">
-                      提示：浏览器如遇 CORS 跨域限制，请在 New-API 反向代理放行 CORS 或使用 Mizurisu Agent 桌面客户端。
+                      提示：浏览器如遇 CORS 跨域限制，请在服务站点反向代理放行 CORS 或使用 Mizurisu Agent 桌面客户端。
                     </p>
                   )}
                 </div>
@@ -674,6 +817,70 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                     ))}
                   </div>
                 )}
+              </div>
+
+              <div className="pt-3 border-t border-[var(--border-hairline)] space-y-3">
+                <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] flex items-center justify-between gap-3">
+                  <div>
+                    <div className="font-medium text-[var(--text-primary)]">
+                      隐藏非对话模型
+                    </div>
+                    <div className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                      开启后，模型选择器默认过滤向量（Embedding）、语音、生图等非对话专用模型。
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={!settings.showNonChatModels}
+                    onChange={(e) =>
+                      updateSettings({ showNonChatModels: !e.target.checked })
+                    }
+                    className="w-4 h-4 accent-[var(--accent)] cursor-pointer shrink-0"
+                    aria-label="隐藏非对话模型"
+                  />
+                </div>
+
+                <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label
+                      htmlFor="custom-system-prompt"
+                      className="font-medium text-[var(--text-primary)]"
+                    >
+                      自定义办公指令（全局 System Prompt 补充）
+                    </label>
+                    {promptSavedNotice && (
+                      <span className="inline-flex items-center gap-1 text-[11px] text-[var(--status-success)]">
+                        <Check className="w-3 h-3" />
+                        <span>已保存</span>
+                      </span>
+                    )}
+                  </div>
+                  <textarea
+                    id="custom-system-prompt"
+                    rows={3}
+                    value={promptDraft}
+                    onChange={(e) => {
+                      setPromptSavedNotice(false);
+                      setPromptDraft(e.target.value);
+                    }}
+                    onBlur={() => void handleSaveCustomPrompt(true)}
+                    placeholder="例如：默认输出财务严谨口径，币种保留两位小数；报告结尾统一附带风险提示与下一步行动建议..."
+                    className="w-full p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[12px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--border-strong)] resize-y leading-relaxed"
+                  />
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <span className="text-[11px] text-[var(--text-muted)]">
+                      离开输入框或点击右侧按钮时保存，并自动附加到后续每次 AI 对话中。
+                    </span>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => void handleSaveCustomPrompt(false)}
+                      className="h-7 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] text-[11px] font-medium text-[var(--text-primary)] shrink-0 cursor-pointer transition"
+                    >
+                      保存指令
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -800,22 +1007,90 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                 />
               </div>
 
-              <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-2.5">
+              <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-3">
                 <div className="flex items-center gap-2 font-medium text-[var(--text-primary)]">
                   <Database className="w-4 h-4 text-[var(--text-muted)]" />
-                  <span>跨设备本地数据迁移</span>
+                  <span>导出工作区与对话备份</span>
                 </div>
                 <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
                   将对话历史、工作区文档与配置导出为单个 JSON 文件，可在网页端、桌面端与移动端间迁移恢复。
                 </p>
+
+                <label className="flex items-start justify-between gap-3 p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] cursor-pointer">
+                  <div className="space-y-0.5">
+                    <div className="font-medium text-[var(--text-primary)]">
+                      安全脱敏模式（不包含 API Key 密钥）
+                    </div>
+                    <div className="text-[11px] text-[var(--text-muted)]">
+                      推荐保持开启。关闭后导出的 JSON 将明文保留当前 API Key。
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={redactSecrets}
+                    onChange={(e) => {
+                      setRedactSecrets(e.target.checked);
+                      setConfirmSecretExport(false);
+                    }}
+                    className="w-4 h-4 mt-0.5 accent-[var(--accent)] cursor-pointer shrink-0"
+                  />
+                </label>
+
+                <div className="px-3 py-2 rounded-md border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 flex items-start gap-2 text-[11px] leading-relaxed text-[var(--text-primary)]">
+                  <AlertTriangle className="w-3.5 h-3.5 text-[var(--status-warning)] mt-0.5 shrink-0" />
+                  <span>
+                    {redactSecrets
+                      ? "安全提示：当前已开启安全脱敏模式，导出备份时会自动抹除 API Key 密钥，适合安全归档或分享迁移；恢复后重新填入密钥即可使用。"
+                      : "安全警示：你已取消脱敏模式，导出的备份文件将包含明文 API Key 密钥，请勿分享给他人或上传至公共网盘！"}
+                  </span>
+                </div>
+
+                {confirmSecretExport && !redactSecrets && (
+                  <div className="p-2.5 rounded-md border border-[var(--status-warning)]/50 bg-[var(--bg-surface)] space-y-2">
+                    <div className="text-[11px] font-medium text-[var(--status-warning)]">
+                      二次确认：确定要在备份文件中包含明文 API Key 密钥吗？
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={exportingBackup}
+                        onClick={() => void runExportBackup(true)}
+                        className="h-7 px-2.5 rounded-md bg-[var(--status-warning)] text-black font-medium text-[11px] inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                      >
+                        {exportingBackup && <Loader2 className="w-3 h-3 animate-spin" />}
+                        <span>确认导出含密钥备份</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRedactSecrets(true);
+                          setConfirmSecretExport(false);
+                        }}
+                        className="h-7 px-2.5 rounded-md border border-[var(--border-hairline)] text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
+                      >
+                        切回安全脱敏模式
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
-                    onClick={handleExportBackup}
-                    className="h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] inline-flex items-center gap-1.5 text-[var(--text-primary)] cursor-pointer"
+                    disabled={exportingBackup}
+                    onClick={handleExportBackupClick}
+                    className="h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] inline-flex items-center gap-1.5 text-[var(--text-primary)] cursor-pointer disabled:opacity-50"
                   >
-                    <Download className="w-3.5 h-3.5 text-[var(--text-muted)]" />
-                    <span>导出整库备份 (.json)</span>
+                    {exportingBackup ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--text-muted)]" />
+                    ) : (
+                      <Download className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+                    )}
+                    <span>
+                      {redactSecrets
+                        ? "导出脱敏备份 (.json)"
+                        : "导出含密钥备份 (.json)"}
+                    </span>
                   </button>
                   <input
                     ref={importRef}

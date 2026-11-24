@@ -9,6 +9,7 @@ import {
   PanelRight,
   Search,
   Settings,
+  Star,
   Sun,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -24,6 +25,102 @@ const THINKING_OPTIONS: Array<{ value: ThinkingLevel; label: string }> = [
   { value: "medium", label: "中" },
   { value: "high", label: "高" },
 ];
+
+const PROVIDER_GROUP_ORDER: ProviderGroup[] = [
+  "anthropic",
+  "openai",
+  "google",
+  "deepseek",
+  "qwen",
+  "xai",
+  "mistral",
+  "meta",
+  "other",
+];
+
+/** 提取模型展示徽标（最多保留 2 个紧凑标签，避免顶栏下拉拥挤） */
+function getModelCompactBadges(model: ModelInfo): string[] {
+  if (model.tags && model.tags.length > 0) {
+    return model.tags.slice(0, 2);
+  }
+  const tags: string[] = [];
+  if (model.isChatCapable === false) {
+    tags.push("非对话");
+  } else {
+    if (model.recommended) tags.push("推荐");
+    if (model.supportsReasoning) tags.push("推理");
+    if (model.supportsVision) tags.push("视觉");
+    if (model.contextWindow >= 200000) tags.push("长文本");
+  }
+  return tags.slice(0, 2);
+}
+
+/** 单个模型条目：支持能力徽标与星标收藏切换 */
+function ModelOptionRow({
+  model,
+  active,
+  favorited,
+  onSelect,
+  onToggleFavorite,
+}: {
+  model: ModelInfo;
+  active: boolean;
+  favorited: boolean;
+  onSelect: (modelId: string) => void;
+  onToggleFavorite: (modelId: string) => void;
+}) {
+  const badges = getModelCompactBadges(model);
+
+  return (
+    <div
+      className={`group w-full min-h-[28px] px-1.5 rounded-md flex items-center justify-between gap-1.5 transition ${
+        active
+          ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-medium"
+          : "hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => onSelect(model.id)}
+        className="flex-1 min-w-0 h-7 px-1 text-left text-[12px] flex items-center justify-between gap-2 cursor-pointer"
+      >
+        <span className="font-mono truncate">{model.id}</span>
+        <span className="flex items-center gap-1 shrink-0">
+          {badges.map((badge) => (
+            <span
+              key={badge}
+              className={`text-[10px] px-1.5 py-px rounded border leading-tight ${
+                badge === "推荐"
+                  ? "border-[var(--accent)]/35 bg-[var(--accent-soft)] text-[var(--accent)]"
+                  : "border-[var(--border-hairline)] bg-[var(--bg-elevated)] text-[var(--text-muted)]"
+              }`}
+            >
+              {badge}
+            </span>
+          ))}
+          {active && <Check className="w-3 h-3 text-[var(--accent)] shrink-0 ml-0.5" />}
+        </span>
+      </button>
+
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleFavorite(model.id);
+        }}
+        title={favorited ? "取消收藏" : "加入常用收藏"}
+        aria-label={favorited ? `取消收藏 ${model.id}` : `收藏 ${model.id}`}
+        className={`w-5 h-5 rounded inline-flex items-center justify-center shrink-0 transition cursor-pointer ${
+          favorited
+            ? "text-[var(--status-warning)] opacity-100"
+            : "text-[var(--text-muted)] opacity-45 group-hover:opacity-100 hover:text-[var(--text-primary)]"
+        }`}
+      >
+        <Star className={`w-3 h-3 ${favorited ? "fill-current" : ""}`} />
+      </button>
+    </div>
+  );
+}
 
 export function TopBar({
   sidebarOpen,
@@ -41,7 +138,9 @@ export function TopBar({
     setPreviewOpen,
     setCommandPaletteOpen,
     updateConfig,
+    updateSettings,
     toggleTheme,
+    toggleFavoriteModel,
     setSettingsOpen,
     mountNativeDirectory,
   } = useAppStore();
@@ -74,21 +173,54 @@ export function TopBar({
     );
   }, [models, config]);
 
-  const groupedModels = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const list =
+  const showNonChat = Boolean(settings.showNonChatModels);
+  const favoriteSet = useMemo(
+    () => new Set(settings.favoriteModels || []),
+    [settings.favoriteModels]
+  );
+
+  const modelCatalog = useMemo(() => {
+    const baseList =
       models.length > 0
         ? models
         : [inferModelMetadata(config.selectedModelId || "gpt-4o", config)];
-    const filtered = q ? list.filter((m) => m.id.toLowerCase().includes(q)) : list;
+
+    const hiddenNonChatCount = baseList.filter((m) => m.isChatCapable === false).length;
+    const chatFiltered = showNonChat
+      ? baseList
+      : baseList.filter((m) => m.isChatCapable !== false);
+
+    const q = search.trim().toLowerCase();
+    const filtered = q
+      ? chatFiltered.filter(
+          (m) =>
+            m.id.toLowerCase().includes(q) ||
+            m.name.toLowerCase().includes(q) ||
+            (m.tags || []).some((t) => t.toLowerCase().includes(q))
+        )
+      : chatFiltered;
+
+    const favorites = q ? [] : filtered.filter((m) => favoriteSet.has(m.id));
+    const recommended = q ? [] : filtered.filter((m) => m.recommended);
+
     const map = new Map<ProviderGroup, ModelInfo[]>();
     for (const m of filtered) {
       const bucket = map.get(m.providerGroup) || [];
       bucket.push(m);
       map.set(m.providerGroup, bucket);
     }
-    return [...map.entries()];
-  }, [models, search, config]);
+    const grouped = PROVIDER_GROUP_ORDER.filter((g) => map.has(g)).map(
+      (g) => [g, map.get(g)!] as [ProviderGroup, ModelInfo[]]
+    );
+
+    return {
+      favorites,
+      recommended,
+      grouped,
+      hiddenNonChatCount,
+      totalVisible: filtered.length,
+    };
+  }, [models, search, config, showNonChat, favoriteSet]);
 
   const currentThinkingLabel =
     THINKING_OPTIONS.find((opt) => opt.value === config.thinkingLevel)?.label ?? "中";
@@ -102,7 +234,7 @@ export function TopBar({
   const isConnected = Boolean(authSession && authSession.mode !== "guest" && config.apiKey);
 
   return (
-    <header className="h-11 shrink-0 border-b border-[var(--border-hairline)] bg-[var(--bg-canvas)] px-2.5 flex items-center justify-between gap-2 select-none z-20">
+    <header className="h-11 shrink-0 border-b border-[var(--border-hairline)] bg-[var(--bg-canvas)] px-2.5 flex items-center justify-between gap-2 select-none z-40">
       {/* 左侧：侧栏开关、几何标志、模型下拉、Thinking 胶囊 */}
       <div className="flex items-center gap-1.5 min-w-0">
         <button
@@ -143,66 +275,120 @@ export function TopBar({
           </button>
 
           {modelPickerOpen && (
-            <div className="absolute left-0 mt-1.5 w-80 max-w-[90vw] rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] shadow-[0_16px_40px_rgba(0,0,0,0.45)] overflow-hidden z-50">
+            <div className="fixed left-2 right-2 top-12 sm:absolute sm:left-0 sm:right-auto sm:top-auto sm:mt-1.5 sm:w-[380px] sm:max-w-[calc(100vw-2rem)] rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] shadow-[0_16px_40px_rgba(0,0,0,0.45)] overflow-hidden z-50">
               <div className="h-9 px-2.5 border-b border-[var(--border-hairline)] flex items-center gap-2">
                 <Search className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="搜索模型 ID..."
+                  placeholder="搜索模型 ID 或能力标签..."
                   autoFocus
                   className="w-full bg-transparent text-[12px] outline-none text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
                 />
               </div>
               <div className="max-h-72 overflow-y-auto p-1.5 space-y-2">
-                {groupedModels.length === 0 ? (
+                {modelCatalog.totalVisible === 0 ? (
                   <div className="text-[12px] text-[var(--text-muted)] text-center py-6">
-                    未匹配到模型，可在设置中同步或补充
+                    未匹配到模型，可尝试切换显示全部或前往设置同步
                   </div>
                 ) : (
-                  groupedModels.map(([group, items]) => (
-                    <div key={group}>
-                      <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-                        {PROVIDER_GROUP_LABELS[group]}
-                      </div>
-                      <div className="space-y-0.5">
-                        {items.map((m) => {
-                          const active = m.id === config.selectedModelId;
-                          return (
-                            <button
-                              key={m.id}
-                              type="button"
-                              onClick={() => {
-                                updateConfig({ selectedModelId: m.id });
+                  <>
+                    {modelCatalog.favorites.length > 0 && (
+                      <div>
+                        <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+                          常用收藏
+                        </div>
+                        <div className="space-y-0.5">
+                          {modelCatalog.favorites.map((m) => (
+                            <ModelOptionRow
+                              key={`fav-${m.id}`}
+                              model={m}
+                              active={m.id === config.selectedModelId}
+                              favorited={true}
+                              onSelect={(id) => {
+                                updateConfig({ selectedModelId: id });
                                 setModelPickerOpen(false);
                               }}
-                              className={`w-full h-7 px-2 rounded-md text-left text-[12px] flex items-center justify-between gap-2 transition cursor-pointer ${
-                                active
-                                  ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-medium"
-                                  : "hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                              }`}
-                            >
-                              <span className="font-mono truncate">{m.id}</span>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <span className="text-[10px] text-[var(--text-muted)]">
-                                  {m.supportsReasoning ? "推理" : ""}
-                                  {m.supportsVision
-                                    ? m.supportsReasoning
-                                      ? "·视觉"
-                                      : "视觉"
-                                    : ""}
-                                </span>
-                                {active && (
-                                  <Check className="w-3 h-3 text-[var(--accent)]" />
-                                )}
-                              </div>
-                            </button>
-                          );
-                        })}
+                              onToggleFavorite={toggleFavoriteModel}
+                            />
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ))
+                    )}
+
+                    {modelCatalog.recommended.length > 0 && (
+                      <div>
+                        <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+                          办公推荐
+                        </div>
+                        <div className="space-y-0.5">
+                          {modelCatalog.recommended.map((m) => (
+                            <ModelOptionRow
+                              key={`rec-${m.id}`}
+                              model={m}
+                              active={m.id === config.selectedModelId}
+                              favorited={favoriteSet.has(m.id)}
+                              onSelect={(id) => {
+                                updateConfig({ selectedModelId: id });
+                                setModelPickerOpen(false);
+                              }}
+                              onToggleFavorite={toggleFavoriteModel}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {modelCatalog.grouped.map(([group, items]) => (
+                      <div key={group}>
+                        <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+                          {PROVIDER_GROUP_LABELS[group]}
+                        </div>
+                        <div className="space-y-0.5">
+                          {items.map((m) => (
+                            <ModelOptionRow
+                              key={`grp-${m.id}`}
+                              model={m}
+                              active={m.id === config.selectedModelId}
+                              favorited={favoriteSet.has(m.id)}
+                              onSelect={(id) => {
+                                updateConfig({ selectedModelId: id });
+                                setModelPickerOpen(false);
+                              }}
+                              onToggleFavorite={toggleFavoriteModel}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </>
                 )}
+              </div>
+
+              <div className="border-t border-[var(--border-hairline)] bg-[var(--bg-sidebar)] px-2.5 py-2">
+                <button
+                  type="button"
+                  onClick={() => updateSettings({ showNonChatModels: !showNonChat })}
+                  className="w-full flex items-center justify-between gap-2 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition cursor-pointer"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span
+                      className={`w-3.5 h-3.5 rounded border inline-flex items-center justify-center shrink-0 transition ${
+                        showNonChat
+                          ? "border-[var(--accent)] bg-[var(--accent)] text-white"
+                          : "border-[var(--border-strong)] bg-[var(--bg-surface)]"
+                      }`}
+                    >
+                      {showNonChat && <Check className="w-2.5 h-2.5" />}
+                    </span>
+                    <span className="truncate">显示非对话模型（向量/语音/生图）</span>
+                  </span>
+                  {!showNonChat && modelCatalog.hiddenNonChatCount > 0 && (
+                    <span className="text-[10px] text-[var(--text-muted)] tabular-nums shrink-0">
+                      已隐藏 {modelCatalog.hiddenNonChatCount}
+                    </span>
+                  )}
+                </button>
               </div>
             </div>
           )}

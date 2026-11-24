@@ -218,6 +218,7 @@ export async function dbDeleteCustomSkill(id: string): Promise<void> {
 export interface BackupBundle {
   version: 1;
   exportedAt: number;
+  secretsRedacted?: boolean;
   config?: NewApiConfig;
   settings?: AppSettings;
   sessions: ChatSession[];
@@ -251,17 +252,24 @@ function fromBase64(b64: string): Uint8Array {
   return out;
 }
 
-export async function exportBackupBundle(): Promise<BackupBundle> {
-  const [config, settings, sessions, skills, files] = await Promise.all([
+export async function exportBackupBundle(options?: {
+  includeSecrets?: boolean;
+}): Promise<BackupBundle> {
+  const includeSecrets = options?.includeSecrets === true;
+  const [rawConfig, settings, sessions, skills, files] = await Promise.all([
     kvGet<NewApiConfig>("newapi_config"),
     kvGet<AppSettings>("app_settings"),
     loadAllSessions(),
     dbListCustomSkills(),
     dbListFiles(),
   ]);
+  // 默认脱敏导出：避免备份 JSON 意外明文泄露 apiKey
+  const config =
+    rawConfig && !includeSecrets ? { ...rawConfig, apiKey: "" } : rawConfig;
   return {
     version: 1,
     exportedAt: Date.now(),
+    secretsRedacted: !includeSecrets,
     config,
     settings,
     sessions,

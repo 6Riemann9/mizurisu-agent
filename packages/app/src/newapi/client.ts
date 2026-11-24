@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { detectPlatformKind } from "../platform";
 import type { PlatformAdapter } from "../platform/types";
 import type {
+  ApiErrorDiagnosis,
   ApiProtocol,
   BillingInfo,
   ModelInfo,
@@ -133,6 +134,17 @@ export function inferProtocolForModel(
   return "openai-completions";
 }
 
+/** 非对话类专用模型匹配规则（向量、语音、生图、视频、审核、重排等） */
+export const NON_CHAT_MODEL_RE =
+  /(embedding|tts|whisper|dall-e|moderation|rerank|realtime|audio|transcribe|image|flux|midjourney|sora|kling|suno|bge-|jina-embeddings|voyage-)/i;
+
+/** 主流办公旗舰对话模型匹配规则 */
+const RECOMMENDED_MODEL_RE =
+  /(claude-(?:sonnet-4(?:[-.]5)?|3[-.]7-sonnet)|gpt-4o(?![-.]mini)|gpt-4\.1(?![-.](?:mini|nano))|gpt-5(?![-.](?:mini|nano))|gemini-(?:2\.5(?![-.].*lite)|3(?![-.].*lite))|deepseek-(?:chat|v3|reasoner))/i;
+
+/** 轻量高速模型匹配规则 */
+const LIGHTWEIGHT_MODEL_RE = /(mini|nano|lite|haiku|turbo|flash|8b|7b|3b|1\.5b)/i;
+
 export function inferModelMetadata(
   modelId: string,
   config: Pick<NewApiConfig, "protocolMode" | "modelProtocolOverrides">,
@@ -145,31 +157,34 @@ export function inferModelMetadata(
     config.protocolMode,
     config.modelProtocolOverrides
   );
+  const isChatCapable = !NON_CHAT_MODEL_RE.test(modelId);
 
   const supportsReasoning =
-    /\bo[134](-|$)/.test(lower) ||
-    lower.includes("gpt-5") ||
-    lower.includes("r1") ||
-    lower.includes("reasoner") ||
-    lower.includes("thinking") ||
-    lower.includes("qwq") ||
-    lower.includes("claude-3-7") ||
-    lower.includes("claude-4") ||
-    lower.includes("claude-sonnet-4") ||
-    lower.includes("claude-opus-4") ||
-    lower.includes("claude-haiku-4") ||
-    lower.includes("gemini-2.5") ||
-    lower.includes("gemini-3");
+    isChatCapable &&
+    (/\bo[134](-|$)/.test(lower) ||
+      lower.includes("gpt-5") ||
+      lower.includes("r1") ||
+      lower.includes("reasoner") ||
+      lower.includes("thinking") ||
+      lower.includes("qwq") ||
+      lower.includes("claude-3-7") ||
+      lower.includes("claude-4") ||
+      lower.includes("claude-sonnet-4") ||
+      lower.includes("claude-opus-4") ||
+      lower.includes("claude-haiku-4") ||
+      lower.includes("gemini-2.5") ||
+      lower.includes("gemini-3"));
 
   const supportsVision =
-    lower.includes("gpt-4o") ||
-    lower.includes("gpt-4.1") ||
-    lower.includes("gpt-4.5") ||
-    lower.includes("gpt-5") ||
-    lower.includes("claude") ||
-    lower.includes("gemini") ||
-    lower.includes("vl") ||
-    lower.includes("vision");
+    isChatCapable &&
+    (lower.includes("gpt-4o") ||
+      lower.includes("gpt-4.1") ||
+      lower.includes("gpt-4.5") ||
+      lower.includes("gpt-5") ||
+      lower.includes("claude") ||
+      lower.includes("gemini") ||
+      lower.includes("vl") ||
+      lower.includes("vision"));
 
   let contextWindow = 128000;
   let maxTokens = 16384;
@@ -187,6 +202,18 @@ export function inferModelMetadata(
     maxTokens = 8192;
   }
 
+  const recommended = isChatCapable && RECOMMENDED_MODEL_RE.test(modelId);
+  const tags: string[] = [];
+  if (!isChatCapable) {
+    tags.push("非对话");
+  } else {
+    if (recommended) tags.push("推荐");
+    if (supportsReasoning) tags.push("推理");
+    if (supportsVision) tags.push("视觉");
+    if (contextWindow >= 200000) tags.push("长文本");
+    if (LIGHTWEIGHT_MODEL_RE.test(lower)) tags.push("轻量");
+  }
+
   return {
     id: modelId,
     name: modelId,
@@ -197,6 +224,9 @@ export function inferModelMetadata(
     contextWindow,
     maxTokens,
     ownedBy,
+    isChatCapable,
+    recommended,
+    tags: tags.slice(0, 3),
   };
 }
 
@@ -236,9 +266,6 @@ export interface FetchModelsFallbackOptions {
   sessionRequest?: SessionRequestFn;
   authHeaders?: Record<string, string>;
 }
-
-const NON_CHAT_MODEL_RE =
-  /(embedding|tts|whisper|dall-e|moderation|rerank|realtime|audio|transcribe|image)/i;
 
 const PREFERRED_STATION_MODEL_PATTERNS: RegExp[] = [
   /^claude-sonnet-4[-.]5/i,
@@ -373,6 +400,38 @@ function extractUserModelsPayload(payload: unknown): Array<{ id: string; owned_b
   return out;
 }
 
+const TRANSIENT_RETRY_STATUSES = new Set([500, 502, 503, 504]);
+
+/**
+ * 仅针对幂等 GET 请求对瞬时网关状态码（500/502/503/504）或网络/TLS 断连执行有限次静默重试；
+ * 401/403/404 等确定性客户端错误立即返回，避免无意义重试。
+ */
+async function fetchWithTransientRetry(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  maxRetries = 1
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetchImpl(url, init);
+      if (!TRANSIENT_RETRY_STATUSES.has(res.status) || attempt >= maxRetries) {
+        return res;
+      }
+      // 丢弃失败响应体以释放连接，短暂退避后重试
+      await res.text().catch(() => "");
+    } catch (err) {
+      lastError = err;
+      if (init.signal?.aborted || attempt >= maxRetries) {
+        throw err;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw lastError instanceof Error ? lastError : new Error("请求失败");
+}
+
 export async function fetchNewApiModels(
   config: NewApiConfig,
   fetchImpl: typeof fetch,
@@ -402,7 +461,7 @@ export async function fetchNewApiModels(
 
   if (apiKey) {
     try {
-      const res = await fetchImpl(`${root}/v1/models`, {
+      const res = await fetchWithTransientRetry(fetchImpl, `${root}/v1/models`, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -484,10 +543,14 @@ export async function fetchNewApiBilling(
   };
 
   try {
-    const subRes = await fetchImpl(`${root}/v1/dashboard/billing/subscription`, {
-      method: "GET",
-      headers,
-    });
+    const subRes = await fetchWithTransientRetry(
+      fetchImpl,
+      `${root}/v1/dashboard/billing/subscription`,
+      {
+        method: "GET",
+        headers,
+      }
+    );
 
     if (!subRes.ok) {
       return {
@@ -564,3 +627,184 @@ export const PROVIDER_GROUP_LABELS: Record<ProviderGroup, string> = {
   xai: "xAI (Grok)",
   other: "其他模型",
 };
+
+export interface MizurisuConsoleLinks {
+  homeUrl: string;
+  tokenUrl: string;
+  topupUrl: string;
+  logUrl: string;
+}
+
+/**
+ * 依据站点地址生成 Mizurisu / New-API 控制台常用快捷链接；
+ * 若 baseUrl 无效或非 http/https 协议，则回落至默认站点地址。
+ */
+export function getMizurisuConsoleLinks(baseUrl?: string): MizurisuConsoleLinks {
+  const fallback = normalizeNewApiBaseUrl(DEFAULT_NEWAPI_URL) || "https://www.mizurisu.com";
+  const candidate = normalizeNewApiBaseUrl(baseUrl || "");
+  let homeUrl = fallback;
+
+  if (candidate) {
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        homeUrl = candidate;
+      }
+    } catch {
+      // 地址解析失败时回落默认主站地址
+    }
+  }
+
+  return {
+    homeUrl,
+    tokenUrl: `${homeUrl}/console/token`,
+    topupUrl: `${homeUrl}/console/topup`,
+    logUrl: `${homeUrl}/console/log`,
+  };
+}
+
+/**
+ * 将原始 API / 网络异常信息诊断为客户可理解的标题、操作建议与修复入口提示
+ */
+export function classifyApiError(rawError: string, baseUrl?: string): ApiErrorDiagnosis {
+  const text = (rawError || "").trim();
+
+  // 0. 人机校验 / Cloudflare Turnstile（常见于本地 localhost、桌面端或异域账号直登）
+  if (/(?:turnstile|captcha|人机校验|人机验证|验证码)/i.test(text)) {
+    return {
+      code: "auth",
+      title: "当前站点需要域名人机校验 (Turnstile)",
+      advice:
+        "该站点已开启 Cloudflare Turnstile 域名人机校验，本地预览、桌面端或异域访问无法通过账号密码直登。请前往站点控制台复制 API Key 后切换「API Key 直连」，或将本应用同源部署至站点域名下即可自动免登。",
+      retryable: false,
+      suggestBillingConsole: true,
+    };
+  }
+
+  // 1. 优先识别额度耗尽（部分中转站会在 403/429 下返回 insufficient_quota 或中文余额不足提示）
+  if (
+    /(?:\b402\b|insufficient_quota|quota[_\s-]?(?:exceeded|exhausted|not[_\s-]?enough|insufficient)|余额不足|额度不足|额度已用尽|额度耗尽|欠费|\bquota\b)/i.test(
+      text
+    )
+  ) {
+    return {
+      code: "quota",
+      title: "账户或令牌额度不足",
+      advice: "当前 API Key 或账户余额已耗尽，请前往控制台充值或切换仍有可用额度的令牌。",
+      retryable: false,
+      suggestOpenSettings: true,
+      suggestBillingConsole: true,
+    };
+  }
+
+  // 2. 上下文长度超限
+  if (
+    /(?:context_length|maximum context|too many tokens|context window|prompt is too long|reduce the length|上下文过长|上下文长度|超出最大上下文)/i.test(
+      text
+    )
+  ) {
+    return {
+      code: "context_length",
+      title: "对话内容超出模型上下文限制",
+      advice: "当前对话历史或附带文本过长，建议新建对话、减少附带文件，或切换支持更长上下文的模型（如 Gemini / Claude）。",
+      retryable: false,
+      suggestSwitchModel: true,
+    };
+  }
+
+  // 3. 模型不可用 / 无可用渠道（优先于泛化 503，精准识别“无可用渠道”）
+  if (
+    /(?:\b404\b|model_not_found|model[_\s]+not[_\s]+found|no available channel|无可用渠道|无可用通道|模型不存在|不支持该模型|当前分组.*无可用)/i.test(
+      text
+    )
+  ) {
+    return {
+      code: "model_unavailable",
+      title: "所选模型暂不可用",
+      advice: "中转站当前未配置该模型可用渠道或模型名称已下线，请切换其他推荐对话模型后重试。",
+      retryable: false,
+      suggestSwitchModel: true,
+    };
+  }
+
+  // 4. 鉴权失败 / Key 无效 / 权限不足
+  if (
+    /(?:\b401\b|\b403\b|invalid_api_key|incorrect api key|unauthorized|forbidden|authentication|鉴权失败|无效的令牌|令牌已过期|未提供令牌|未配置.*Key)/i.test(
+      text
+    )
+  ) {
+    return {
+      code: "auth",
+      title: "身份鉴权失效或 API Key 错误",
+      advice: "API Key 可能无效、已过期或无权访问该接口，请打开设置重新登录或更换有效令牌。",
+      retryable: false,
+      suggestOpenSettings: true,
+      suggestBillingConsole: true,
+    };
+  }
+
+  // 5. 请求频率限制
+  if (
+    /(?:\b429\b|rate[_\s-]?limit|too many requests|请求过于频繁|并发限制|触发限流)/i.test(
+      text
+    )
+  ) {
+    return {
+      code: "rate_limit",
+      title: "请求频率触发限流",
+      advice: "当前请求过于频繁或达到并发上限，请稍等数秒后重试，或临时切换其他模型。",
+      retryable: true,
+      suggestSwitchModel: true,
+    };
+  }
+
+  // 6. 浏览器跨域 CORS、本地代理 TLS 握手中断或网络中断
+  if (
+    /(?:failed to fetch|networkerror|network request failed|cors|access-control-allow-origin|err_connection|econnrefused|econnreset|enotfound|etimedout|ehostunreach|load failed|fetch failed|socket disconnected|tls connection|tls\s*握手|代理连接|网络中断|网络连接|跨域)/i.test(
+      text
+    )
+  ) {
+    const isTlsOrProxy = /(?:socket disconnected|tls connection|tls\s*握手|代理连接|econnreset)/i.test(
+      text
+    );
+    const cleanBase = normalizeNewApiBaseUrl(baseUrl || "");
+    const advice = isTlsOrProxy
+      ? "连接中转站时的网络或 TLS 握手被意外中断（通常由网络代理节点瞬断引起），请稍等后重试或检查本机网络/代理状态。"
+      : cleanBase
+        ? `无法连通站点 ${cleanBase}，可能是浏览器跨域 (CORS) 拦截或网络中断。可将本工作台同源部署于中转站域名下，或改用桌面端客户端（免跨域直连）。`
+        : "请求被浏览器跨域 (CORS) 拦截或网络连接中断。请检查站点地址与网络状态，建议同源部署或使用桌面端客户端。";
+    return {
+      code: "cors_network",
+      title: isTlsOrProxy ? "网络或 TLS 握手连接中断" : "网络连接中断或跨域受限",
+      advice,
+      retryable: true,
+      suggestOpenSettings: true,
+    };
+  }
+
+  // 7. 上游服务端错误 (500 / 502 / 503 / 504)
+  if (
+    /(?:\b500\b|\b502\b|\b503\b|\b504\b|internal server error|bad gateway|service unavailable|gateway timeout|overloaded|上游服务)/i.test(
+      text
+    )
+  ) {
+    return {
+      code: "server",
+      title: "上游模型服务暂时波动",
+      advice: "中转站或上游模型接口暂时返回服务端错误，建议稍后重试或切换其他可用模型。",
+      retryable: true,
+      suggestSwitchModel: true,
+    };
+  }
+
+  // 8. 兜底未知错误
+  return {
+    code: "unknown",
+    title: "请求未能正常完成",
+    advice: text
+      ? `错误详情：${text.slice(0, 180)}。请检查站点配置、网络状态或切换模型后重试。`
+      : "发生未知异常，请检查配置或稍后重试。",
+    retryable: true,
+    suggestOpenSettings: true,
+  };
+}

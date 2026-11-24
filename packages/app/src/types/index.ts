@@ -31,6 +31,12 @@ export interface ModelInfo {
   contextWindow: number;
   maxTokens: number;
   ownedBy?: string;
+  /** 是否支持常规对话（排除向量、语音、生图等专用模型） */
+  isChatCapable?: boolean;
+  /** 是否为官方推荐的主流办公旗舰模型 */
+  recommended?: boolean;
+  /** 简短中文能力标签（最多 3 个） */
+  tags?: string[];
 }
 
 export interface NewApiSiteStatus {
@@ -159,6 +165,8 @@ export interface UiMessage {
   content: string;
   thinking?: string;
   attachments?: Array<{ path: string; name: string; category: OfficeFileCategory }>;
+  /** 用户随消息上传的图片预览列表 */
+  images?: Array<{ name: string; mimeType: string; dataUrl: string }>;
   toolCalls?: ToolCallRecord[];
   usage?: MessageUsage;
   modelId?: string;
@@ -200,4 +208,41 @@ export interface AppSettings {
   autoApproveDelete: boolean;
   mountedNativeDir?: string;
   previewWidth: number;
+  /** 用户收藏的常用模型 ID 列表 */
+  favoriteModels?: string[];
+  /** 模型选择器中是否显示非对话模型（如向量/语音/生图） */
+  showNonChatModels?: boolean;
+  /** 是否已关闭首次使用引导提示 */
+  onboardingDismissed?: boolean;
+  /** 客户自定义的全局办公偏好提示词 */
+  customSystemPrompt?: string;
+}
+
+/** 全局轻提示条目 */
+export interface ToastItem {
+  id: string;
+  level: "info" | "success" | "warning" | "error";
+  message: string;
+}
+
+/** API 错误分类枚举 */
+export type ApiErrorCode =
+  | "auth"
+  | "quota"
+  | "rate_limit"
+  | "model_unavailable"
+  | "cors_network"
+  | "context_length"
+  | "server"
+  | "unknown";
+
+/** 面向客户的 API 错误诊断结果与修复建议 */
+export interface ApiErrorDiagnosis {
+  code: ApiErrorCode;
+  title: string;
+  advice: string;
+  retryable: boolean;
+  suggestOpenSettings?: boolean;
+  suggestSwitchModel?: boolean;
+  suggestBillingConsole?: boolean;
 }

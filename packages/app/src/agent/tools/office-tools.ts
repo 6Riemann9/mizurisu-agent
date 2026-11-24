@@ -8,6 +8,9 @@ import {
   createWordDocument,
   exportHtmlSlidesToPptxBytes,
   inspectExcel,
+  markdownToPdfSpec,
+  markdownToWordSpec,
+  mergePdfDocuments,
   parseSlidesHtmlDocument,
   readExcelSheet,
   readPdfDocument,
@@ -17,6 +20,7 @@ import {
   updateSlideInHtmlDocument,
   validateSlidesHtml,
   type CellScalar,
+  type PdfSection,
   type PptSlideInput,
   type SlideThemeId,
   type SlideValidationReport,
@@ -198,7 +202,35 @@ const pdfCreateParams = obj({
   path: str({ description: "新建或覆盖的 .pdf 文件路径" }),
   title: str({ description: "PDF 文档标题" }),
   subtitle: opt(str({ description: "副标题" })),
-  paragraphs: arr(str(), { description: "正文段落列表", minItems: 1 }),
+  paragraphs: opt(arr(str(), { description: "正文段落列表（兼容简单纯段落模式）" })),
+  sections: opt(
+    arr(
+      obj({
+        type: oneOf(["heading", "paragraph", "bullets", "table"], {
+          description: "结构化区块类型",
+        }),
+        level: opt(int({ description: "仅 heading 有效：1、2 或 3", minimum: 1, maximum: 3 })),
+        text: opt(str({ description: "heading 或 paragraph 的文本内容" })),
+        items: opt(arr(str(), { description: "bullets 列表条目" })),
+        headers: opt(arr(str(), { description: "table 表头" })),
+        rows: opt(arr(arr(str()), { description: "table 数据行" })),
+      }),
+      { description: "结构化区块列表（支持多级标题、段落、要点列表与表格）" }
+    )
+  ),
+  footerText: opt(str({ description: "可选页脚文字，默认显示 Mizurisu Agent" })),
+});
+
+const pdfMergeParams = obj({
+  paths: arr(str(), { description: "按顺序合并的工作区 .pdf 文件路径列表（至少 2 份）", minItems: 2 }),
+  outputPath: str({ description: "合并后的输出 .pdf 文件路径" }),
+});
+
+const markdownExportParams = obj({
+  sourcePath: str({ description: "工作区内的 Markdown 源文件路径，如 report.md" }),
+  format: oneOf(["docx", "pdf"], { description: "导出目标格式：docx 或 pdf" }),
+  outputPath: opt(str({ description: "可选输出文件路径，省略时自动替换源文件扩展名" })),
+  title: opt(str({ description: "可选文档标题（当 Markdown 未含一级标题时作为兜底标题）" })),
 });
 
 function toCellInput(v: unknown): CellScalar | { formula: string } {
@@ -223,6 +255,18 @@ function ensureSlidesHtmlPath(rawPath: string): string {
 
 function derivePptxPath(slidesPath: string): string {
   return slidesPath.replace(/\.(slides|deck)\.html$/i, ".pptx").replace(/\.html$/i, ".pptx");
+}
+
+function deriveFallbackTitle(sourcePath: string): string {
+  const filename = sourcePath.split("/").pop() || sourcePath;
+  return filename.replace(/\.(md|mdx|markdown)$/i, "") || "导出文档";
+}
+
+function deriveExportOutputPath(sourcePath: string, format: "docx" | "pdf"): string {
+  if (/\.(md|mdx|markdown)$/i.test(sourcePath)) {
+    return sourcePath.replace(/\.(md|mdx|markdown)$/i, `.${format}`);
+  }
+  return `${sourcePath}.${format}`;
 }
 
 function formatSlideValidationSummary(report: SlideValidationReport): string {
@@ -664,20 +708,129 @@ export function createOfficeTools(vfs: WorkspaceVFS): AgentTool[] {
   const pdfCreateTool: AgentTool<typeof pdfCreateParams> = {
     name: "pdf_create",
     label: "生成 PDF 文档",
-    description: "根据标题和正文段落生成规范的 .pdf 文档（支持中英文混排）。",
+    description:
+      "根据标题、正文段落或结构化区块（多级标题、列表、表格）生成带页眉页码的 .pdf 文档（支持中英文混排）。",
     parameters: pdfCreateParams,
     execute: async (_id, params) => {
+      const sections: PdfSection[] | undefined = params.sections?.map((sec) => {
+        switch (sec.type) {
+          case "heading":
+            return {
+              type: "heading",
+              level: sec.level === 2 ? 2 : sec.level === 3 ? 3 : 1,
+              text: sec.text || "",
+            };
+          case "bullets":
+            return {
+              type: "bullets",
+              items: sec.items || (sec.text ? [sec.text] : []),
+            };
+          case "table":
+            return {
+              type: "table",
+              headers: sec.headers,
+              rows: sec.rows || [],
+            };
+          case "paragraph":
+          default:
+            return { type: "paragraph", text: sec.text || "" };
+        }
+      });
+
+      const hasParagraphs = Boolean(params.paragraphs && params.paragraphs.length > 0);
+      const hasSections = Boolean(sections && sections.length > 0);
+      // 当 paragraphs 与 sections 均为空时使用空段兜底，避免调用报错
+      const resolvedParagraphs = hasParagraphs || hasSections ? params.paragraphs : [""];
+
       const bytes = await createPdfDocument({
         title: params.title,
         subtitle: params.subtitle,
-        paragraphs: params.paragraphs,
+        paragraphs: resolvedParagraphs,
+        sections,
+        footerText: params.footerText,
       });
       const meta = await vfs.writeBytes(params.path, bytes, {
         snapshotNote: "Agent 生成 PDF 前快照",
       });
+      const fallbackHint =
+        !hasParagraphs && !hasSections ? "（未提供正文或区块，已按空段落兜底生成标题页）" : "";
       return {
-        content: [{ type: "text", text: `已生成 PDF 文件 ${meta.path} (${meta.size} 字节)。` }],
+        content: [
+          {
+            type: "text",
+            text: `已生成 PDF 文件 ${meta.path} (${meta.size} 字节)。${fallbackHint}`,
+          },
+        ],
         details: { modifiedPath: meta.path, size: meta.size },
+      };
+    },
+  };
+
+  const pdfMergeTool: AgentTool<typeof pdfMergeParams> = {
+    name: "pdf_merge",
+    label: "合并多个 PDF 文档",
+    description: "按顺序读取工作区中的多份 .pdf 文件（至少 2 份）并合并输出为一个新 PDF。",
+    parameters: pdfMergeParams,
+    execute: async (_id, params) => {
+      if (params.paths.length < 2) {
+        throw new Error("合并 PDF 至少需要提供 2 份有效文件路径");
+      }
+      const filesBytes: Uint8Array[] = [];
+      for (const path of params.paths) {
+        filesBytes.push(await vfs.readBytes(path));
+      }
+      const merged = await mergePdfDocuments(filesBytes);
+      const meta = await vfs.writeBytes(params.outputPath, merged, {
+        snapshotNote: "Agent 合并 PDF 前快照",
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `已将 ${params.paths.length} 份 PDF 合并为 ${meta.path} (${meta.size} 字节)。`,
+          },
+        ],
+        details: {
+          modifiedPath: meta.path,
+          size: meta.size,
+          sourceCount: params.paths.length,
+        },
+      };
+    },
+  };
+
+  const markdownExportTool: AgentTool<typeof markdownExportParams> = {
+    name: "markdown_export",
+    label: "Markdown 导出 Word / PDF",
+    description: "将工作区 Markdown 文件解析为结构化标题、列表与表格，导出为规范 .docx 或 .pdf 文件。",
+    parameters: markdownExportParams,
+    execute: async (_id, params) => {
+      const markdown = await vfs.readText(params.sourcePath);
+      const fallbackTitle = params.title?.trim() || deriveFallbackTitle(params.sourcePath);
+      const targetPath =
+        params.outputPath?.trim() || deriveExportOutputPath(params.sourcePath, params.format);
+
+      const bytes =
+        params.format === "docx"
+          ? await createWordDocument(markdownToWordSpec(markdown, fallbackTitle))
+          : await createPdfDocument(markdownToPdfSpec(markdown, fallbackTitle));
+
+      const meta = await vfs.writeBytes(targetPath, bytes, {
+        snapshotNote: `Markdown 导出 ${params.format.toUpperCase()} 前快照`,
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `已将 ${params.sourcePath} 导出为 ${meta.path} (${meta.size} 字节)。`,
+          },
+        ],
+        details: {
+          modifiedPath: meta.path,
+          size: meta.size,
+          format: params.format,
+          sourcePath: params.sourcePath,
+        },
       };
     },
   };
@@ -696,5 +849,7 @@ export function createOfficeTools(vfs: WorkspaceVFS): AgentTool[] {
     pptCreateTool,
     pdfReadTool,
     pdfCreateTool,
+    pdfMergeTool,
+    markdownExportTool,
   ];
 }

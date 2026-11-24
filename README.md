@@ -4,22 +4,28 @@
 
 ## 核心特性
 
-- **开箱直连 Mizurisu 与任意 New-API 站点**：
-  - 默认预置 [Mizurisu API](https://www.mizurisu.com) 站点配置，亦可在登录页或设置中一键切换至任意自建或第三方 New-API / One-API 中转站；
-  - 支持**账号密码直登**，自动读取站点元信息（CNY/USD 费率与余额展示）、拉取明文 API Key（无可用 Key 时自动创建 `Mizurisu Agent` 令牌）并同步可用模型列表（默认智能匹配站点主流模型）；
+- **开箱直连 Mizurisu 与任意兼容中转站点**：
+  - 默认预置 [Mizurisu API](https://www.mizurisu.com) 站点配置，亦可在登录页或设置中一键切换至任意自建或第三方 OpenAI / New-API / One-API 中转站，并直达控制台获取 Key、充值额度与查看调用日志；
+  - 支持**账号密码直登**，自动读取站点元信息（CNY/USD 费率与余额展示）、拉取明文 API Key（无可用 Key 时自动创建 `Mizurisu Agent` 令牌）并同步可用模型列表（自动智能匹配主流模型）；
   - 支持同源部署（如挂在 `https://www.mizurisu.com/agent/`）自动复用站点登录 Cookie 免二次登录，或通过 URL Hash 参数（`#key={key}&address={address}`）一键免登直达并自动擦除地址栏参数；
-  - 支持一键拉取 `/v1/models` 并按厂商自动分组，`compatible` 与原生多协议 `auto` 自动路由（`openai-completions` / `openai-responses` / `anthropic-messages` / `google-generative-ai`）。
-- **零后端纯本机运行**：对话历史、工作区文件、自定义 Skill 与 API Key 均保存在本地设备（IndexedDB / 本地磁盘），不经由任何第三方中转服务器。
-- **Linear 风格极简工作台**：深/浅双主题自适应（Dark-First）、44px 极简顶栏、可折叠侧栏与可拖拽分屏预览面板，内置全局 `Cmd/Ctrl + K` 命令面板与 Activity Timeline 工具调用折叠视图。
-- **Pi 原生 Agent 内核**：完整支持多轮工具调用、Thinking 思考深度调节、流式中断、运行中 `steer` 插话纠偏、会话分支回溯与单次/累计 Token 统计。
-- **内置 Office 全家桶与专业 PPT 设计引擎（纯 JS 零 Python/Office 依赖）**：
-  - **PPT 专业幻灯片 (`slides` / `.html` / `.pptx`)**：采用 **HTML-First 设计引擎 + `dom-to-pptx` 客户端高保真导出**，内置 5 套专业设计主题（Linear Dark / Clean Light / Ocean Slate / Warm Editorial / Tech Violet）、16:9 定寸排版、DOM 溢出与 CSS 白名单自动校验；右侧支持 16:9 舞台缩略图导航、全屏演讲模式、文本内联编辑、实时切换主题及导出标准 `.pptx` 文件。
-  - **Excel (`.xlsx` / `.csv`)**：多 Sheet 建表、公式计算、样式与冻结首行、单元格增量修改；右侧内置类表格视图，支持 `fx` 公式栏、双击编辑、筛选并写回导出。
-  - **Word (`.docx`)**：结构化文档读取、带多级标题/页眉页脚/列表/表格的文档生成；右侧 `docx-preview` 高保真渲染预览。
-  - **PDF (`.pdf`)**：文本提取、中英文混排生成与 PDF 合并；右侧基于 `pdfjs-dist` 逐页渲染。
+  - **智能模型中心 & 中文错误诊断**：自动识别并默认隐藏非对话模型（向量、语音、生图等，可随时切换显示），支持常用模型星标收藏、能力微标（推荐/推理/视觉/长文本）与多协议路由（`compatible` / `auto`）；请求异常（鉴权失效、额度耗尽、限流、跨域、上下文超限等）实时输出中文诊断建议与快捷恢复入口。
+- **零后端纯本机运行与安全防线**：
+  - 对话历史、工作区文件、自定义 Skill 与凭据均保存在本地设备（IndexedDB / 本地磁盘），不经由任何第三方服务器；
+  - **安全加固**：HTML 幻灯片与自定义 CSS 全链路 XSS 消毒（拦截危险标签、事件属性、协议与表达式注入，完整保留矢量 SVG 与 Bento 布局）；Web Worker 数据沙箱阻断外部网络请求与模块逃逸；整库备份默认开启安全脱敏（不含明文 API Key）；桌面端 Shell 工具配备 60 秒超时强杀、256KB 输出截断及严格路径穿越校验。
+- **Linear 风格客户工作台与高效交互**：
+  - 深/浅双主题自适应、44px 极简顶栏、可折叠侧栏（支持工作区文件搜索、防误删二次确认、行内重命名与会话重命名）、可拖拽分屏预览面板（配备面板级错误边界兜底）与 `Cmd/Ctrl + K` 命令面板；
+  - 支持 `Ctrl+V` 直接粘贴剪贴板图片、纯图片/纯附件发送、消息「编辑重发」与「重新生成」、代码块一键复制及客户首次使用三步引导；支持自定义全局办公指令（System Prompt 补充）以适配企业固定输出口径。
+- **高可靠性 Agent 内核**：
+  - 支持多轮工具调用文本与 Token 用量精准累加、上下文预算自动裁剪、工具审批中止防死锁、流式中断、运行中 `steer` 插话纠偏与会话分支回溯。
+- **原生级 Office 套件与一键交付流（纯 JS 零 Python/Office 依赖）**：
+  - **Excel 原生级电子表格 (`.xlsx` / `.csv`)**：基于 **Univer Sheets** 与 ExcelJS 双向无损桥接，支持多 Sheet、400+ 公式引擎、`fx` 编辑栏、筛选、排序、查找替换、条件格式、行列冻结、样式写回与自动防抖保存；支持全屏「展开编辑」（ResizeObserver 自适应铺满）与隔离 JS 沙箱多表联合分析 (`dataPaths`)。
+  - **Word 原生级富文本编辑 (`.docx`)**：集成 **Tiptap** A4 纸张编辑器与多页高保真排版双模式切换，支持 H1-H3 标题、加粗/斜体/下划线/高亮、文字对齐、项目/编号列表、可增删行列表格操作与实时 `.docx` 双向保存导出；亦支持缩放与一键打印。
+  - **PPT 专业幻灯片 (`slides` / `.html` / `.pptx`)**：采用 **HTML-First 设计引擎 + 客户端矢量导出引擎**，内置 5 套主题与 16:9 排版；`.pptx` 预览优先视觉还原并支持全屏演示及「转为可编辑 Slides (`.slides.html`)」一键迁移精修。
+  - **PDF 专业阅读与可搜索中文导出 (`.pdf`)**：基于 `pdfjs-dist` 渲染缩略图侧栏、真实 `TextLayer` 文本划选与复制、工具栏全文搜索高亮、90° 旋转、适配页宽/缩放到页与打印；Canvas 渲染的中文 PDF 内嵌零外部依赖 `ToUnicode` 隐形文本层，开箱支持全文检索与划选；支持多份 PDF 合并 (`pdf_merge`)。
+  - **侧栏一键新建与一键交付**：工作区侧栏 `+ 新建` 一键创建空白/模板 Word (`.docx`)、Excel (`.xlsx`)、演示文稿 (`.slides.html`) 与 Markdown (`.md`)；右侧默认 600px 舒展分栏并支持 Markdown 一键转存正式 Word/PDF、`.zip` 整包交付与 9 套办公技能。
 - **三端内置增强**：
-  - **Web / PWA**：桌面三栏 / 移动底栏响应式双形态，支持 File System Access API 导出及 JSON 整库备份；
-  - **Desktop (Tauri v2)**：无 CORS 原生 HTTP（支持 Cookie 会话）、本地目录挂载同步、受人工审批保护的工作区 Shell 工具；
+  - **Web / PWA**：桌面三栏 / 移动底栏响应式双形态，支持 File System Access API 导出及脱敏 JSON 整库备份；
+  - **Desktop (Tauri v2)**：无 CORS 原生 HTTP（校验仅放行 HTTP/HTTPS 会话请求）、本地目录挂载同步、受人工审批及超时保护的工作区 Shell 工具；
   - **Mobile (Capacitor 8)**：自适应底部导航、无 CORS 原生 HTTP 与系统原生文件分享。
 
 ## 目录结构
@@ -65,7 +71,7 @@ pnpm dev
 # 类型检查
 pnpm typecheck
 
-# 运行单元测试（New-API 路由与鉴权 / Office 读写闭环 / Slides 排版校验 / Agent 工具）
+# 运行单元测试（New-API 鉴权与诊断 / 安全沙箱 / 运行时恢复 / Office 与 PDF 升级 / Slides 校验 / Agent 工具）
 pnpm test
 
 # 构建生产 Web 静态包（产物位于 packages/app/dist）

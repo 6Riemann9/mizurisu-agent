@@ -129,6 +129,47 @@ describe("New-API 适配器与账号鉴权", () => {
     expect(list.find((m) => m.id === "claude-3-7-sonnet")?.providerGroup).toBe("anthropic");
   });
 
+  it("fetchNewApiModels 对瞬时网络错误或 502 自动重试一次并成功恢复", async () => {
+    let callCount = 0;
+    const flakyFetch = vi.fn(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return new Response("Bad Gateway", { status: 502 });
+      }
+      return new Response(JSON.stringify({ data: [{ id: "gpt-4o", owned_by: "openai" }] }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+
+    const listFrom502 = await fetchNewApiModels(baseConfig, flakyFetch);
+    expect(callCount).toBe(2);
+    expect(listFrom502.some((m) => m.id === "gpt-4o")).toBe(true);
+
+    let errCallCount = 0;
+    const networkFlakyFetch = vi.fn(async () => {
+      errCallCount += 1;
+      if (errCallCount === 1) {
+        throw new TypeError("Failed to fetch");
+      }
+      return new Response(JSON.stringify({ data: [{ id: "deepseek-chat", owned_by: "deepseek" }] }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+
+    const listFromNetworkErr = await fetchNewApiModels(baseConfig, networkFlakyFetch);
+    expect(errCallCount).toBe(2);
+    expect(listFromNetworkErr.some((m) => m.id === "deepseek-chat")).toBe(true);
+  });
+
+  it("fetchNewApiModels 遇到 401 鉴权错误时不进行无意义重试", async () => {
+    const authFailFetch = vi.fn(
+      async () => new Response(JSON.stringify({ error: { message: "Invalid token" } }), { status: 401 })
+    ) as unknown as typeof fetch;
+
+    await expect(fetchNewApiModels(baseConfig, authFailFetch)).rejects.toThrow(/401/);
+    expect(authFailFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("在 /v1/models 失败时通过 sessionRequest 兜底拉取 GET /api/user/models", async () => {
     const failingFetch = vi.fn(
       async () => new Response("Forbidden", { status: 403 })

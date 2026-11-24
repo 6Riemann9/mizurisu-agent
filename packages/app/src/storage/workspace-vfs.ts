@@ -25,7 +25,13 @@ export function normalizeVfsPath(rawPath: string): string {
   return clean;
 }
 
-type VfsListener = (event: { type: "write" | "delete" | "sync"; path?: string }) => void;
+export interface VfsEvent {
+  type: "write" | "delete" | "sync" | "rename";
+  path?: string;
+  previousPath?: string;
+}
+
+type VfsListener = (event: VfsEvent) => void;
 
 export class WorkspaceVFS {
   private listeners = new Set<VfsListener>();
@@ -44,7 +50,7 @@ export class WorkspaceVFS {
     return () => this.listeners.delete(listener);
   }
 
-  private emit(event: { type: "write" | "delete" | "sync"; path?: string }): void {
+  private emit(event: VfsEvent): void {
     for (const l of this.listeners) {
       l(event);
     }
@@ -152,6 +158,66 @@ export class WorkspaceVFS {
     this.emit({ type: "delete", path });
   }
 
+  /** 安全重命名或移动工作区文件，保留旧路径快照并禁止覆盖已有目标文件 */
+  async renameFile(oldRawPath: string, newRawPath: string): Promise<WorkspaceFileMeta> {
+    const oldPath = normalizeVfsPath(oldRawPath);
+    const newPath = normalizeVfsPath(newRawPath);
+
+    if (oldPath === newPath) {
+      throw new Error(`新旧文件路径相同: ${oldPath}`);
+    }
+
+    const existing = await dbGetFile(oldPath);
+    if (!existing) {
+      throw new Error(`工作区文件不存在: ${oldPath}`);
+    }
+
+    const targetExisting = await dbGetFile(newPath);
+    if (targetExisting) {
+      throw new Error(`目标文件已存在: ${newPath}`);
+    }
+
+    // 为原路径留存快照以便后续回滚或追踪
+    await dbAddSnapshot({
+      id: `${oldPath}::${Date.now()}::rename`,
+      path: oldPath,
+      size: existing.size,
+      createdAt: existing.updatedAt,
+      note: `重命名为 ${newPath} 前自动快照`,
+      data: new Uint8Array(existing.data),
+    });
+
+    const now = Date.now();
+    const copy = new Uint8Array(existing.data);
+    const newRecord: WorkspaceFileRecord = {
+      path: newPath,
+      name: newPath.split("/").pop() || newPath,
+      mimeType: inferMimeType(newPath),
+      size: copy.byteLength,
+      updatedAt: now,
+      category: detectFileCategory(newPath),
+      data: copy,
+    };
+
+    await dbPutFile(newRecord);
+    await dbDeleteFile(oldPath);
+
+    if (this.mountedNativeDir) {
+      const platform = getPlatformAdapter();
+      if (platform.writeToNativeDirectory) {
+        await platform
+          .writeToNativeDirectory(this.mountedNativeDir, newPath, copy)
+          .catch(() => undefined);
+      }
+    }
+
+    // 仅发射单次原子 rename 事件，避免预览区因中间 delete 事件产生闪烁或异步竞态
+    this.emit({ type: "rename", path: newPath, previousPath: oldPath });
+
+    const { data: _omit, ...meta } = newRecord;
+    return meta;
+  }
+
   async getSnapshots(rawPath: string): Promise<FileSnapshot[]> {
     const path = normalizeVfsPath(rawPath);
     return await dbGetSnapshots(path);
@@ -214,10 +280,10 @@ export class WorkspaceVFS {
             "# 本周项目进展周报",
             "",
             "## 一、核心指标概览",
-            "- 工作区已内置 `示例_季度销售数据.xlsx`，你可以直接在右侧表格预览、双击编辑，或让 Pi Agent 读取分析并生成 Word 报告 / PPT 汇报。",
+            "- 工作区已内置 `示例_季度销售数据.xlsx`，你可以直接在右侧表格预览、双击编辑，或让 Mizurisu Agent 读取分析并生成 Word 报告 / PPT 汇报。",
             "",
             "## 二、本周重点完成事项",
-            "1. 接入 New-API 多模型中转网关，支持自动拉取模型与余额查询。",
+            "1. 接入 Mizurisu / 多模型 AI 中转网关，支持自动拉取模型与余额查询。",
             "2. 打通 Word / Excel / PPT / PDF 纯本机客户端读写与实时预览闭环。",
             "",
             "## 三、下周计划",

@@ -9,6 +9,7 @@ import type {
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "target", ".next"]);
 const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
 const MAX_IMPORT_FILES = 250;
+const WINDOWS_RESERVED_NAME_RE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
 
 export class TauriPlatformAdapter implements PlatformAdapter {
   readonly kind = "desktop" as const;
@@ -124,11 +125,41 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     relativePath: string,
     data: Uint8Array
   ): Promise<void> {
-    if (!rootPath || relativePath.includes("..")) return;
+    if (!rootPath || !rootPath.trim()) {
+      throw new Error("无效的本地挂载根目录");
+    }
+    // 统一将反斜杠转为正斜杠后严格校验路径，拦截目录穿越与绝对/盘符路径
+    const normalizedRel = relativePath.replace(/\\/g, "/");
+    if (!normalizedRel) {
+      throw new Error("写入挂载目录的相对路径不能为空");
+    }
+    if (normalizedRel.startsWith("/")) {
+      throw new Error(`禁止使用绝对路径写入挂载目录: ${relativePath}`);
+    }
+    if (/^[a-zA-Z]:/.test(normalizedRel)) {
+      throw new Error(`禁止使用包含盘符的路径写入挂载目录: ${relativePath}`);
+    }
+    if (normalizedRel.includes("\0")) {
+      throw new Error(`路径包含非法空字符: ${relativePath}`);
+    }
+    const parts = normalizedRel.split("/");
+    if (
+      parts.some(
+        (seg) =>
+          seg === "" ||
+          seg === "." ||
+          seg === ".." ||
+          seg.endsWith(" ") ||
+          seg.endsWith(".") ||
+          WINDOWS_RESERVED_NAME_RE.test(seg)
+      )
+    ) {
+      throw new Error(`检测到非法路径段（空段、穿越、保留设备名或末尾空格/句点）: ${relativePath}`);
+    }
+
     const { mkdir, writeFile } = await import("@tauri-apps/plugin-fs");
     const normalizedRoot = rootPath.replace(/[\\/]+$/, "");
-    const cleanRel = relativePath.replace(/^\/+/, "");
-    const parts = cleanRel.split("/");
+    const cleanRel = parts.join("/");
     if (parts.length > 1) {
       const parent = `${normalizedRoot}/${parts.slice(0, -1).join("/")}`;
       await mkdir(parent, { recursive: true });
