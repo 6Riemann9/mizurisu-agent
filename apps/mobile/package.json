@@ -1,0 +1,23 @@
+{
+  "name": "@pidesk/mobile",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "sync": "cap sync",
+    "open:android": "cap open android",
+    "open:ios": "cap open ios",
+    "add:android": "cap add android",
+    "add:ios": "cap add ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/core": "^8.0.4",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/ios": "^8.0.0",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/share": "^8.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.4"
+  }
+}

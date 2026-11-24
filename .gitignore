@@ -1,0 +1,24 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# 本地环境变量
+.env
+.env.local
+.env.*.local
+
+# Tauri 构建产物
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
+# Capacitor 原生工程产物（若按需本地生成可不提交）
+apps/mobile/android/
+apps/mobile/ios/
+
+# 日志与系统文件
+*.log
+.DS_Store
+Thumbs.db

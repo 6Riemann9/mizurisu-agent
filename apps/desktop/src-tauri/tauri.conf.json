@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PiDesk",
+  "version": "0.1.0",
+  "identifier": "dev.pidesk.agent",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @pidesk/app dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "pnpm --filter @pidesk/app build",
+    "frontendDist": "../../../packages/app/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PiDesk — Office Agent",
+        "width": 1360,
+        "height": 860,
+        "minWidth": 880,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  }
+}

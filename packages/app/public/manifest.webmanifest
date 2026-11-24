@@ -1,0 +1,17 @@
+{
+  "name": "PiDesk Office Agent",
+  "short_name": "PiDesk",
+  "description": "面向 New-API 的纯本机跨形态三端 Office Agent 工作台",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

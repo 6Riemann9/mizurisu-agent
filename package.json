@@ -1,0 +1,17 @@
+{
+  "name": "pidesk-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "description": "PiDesk — 面向 New-API 的纯本机跨形态三端 Office Agent 工作台（Web / Desktop / Mobile）",
+  "license": "MIT",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "dev": "pnpm --filter @pidesk/app dev",
+    "build": "pnpm --filter @pidesk/app build",
+    "typecheck": "pnpm --filter @pidesk/app typecheck",
+    "test": "pnpm --filter @pidesk/app test",
+    "dev:desktop": "pnpm --filter @pidesk/desktop dev",
+    "build:desktop": "pnpm --filter @pidesk/desktop build",
+    "sync:mobile": "pnpm --filter @pidesk/app build && pnpm --filter @pidesk/mobile sync"
+  }
+}

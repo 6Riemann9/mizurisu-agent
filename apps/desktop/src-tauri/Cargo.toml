@@ -1,0 +1,25 @@
+[package]
+name = "pidesk-desktop"
+version = "0.1.0"
+description = "PiDesk — 面向 New-API 的纯本机 Office Agent 桌面端"
+authors = ["PiDesk Contributors"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+name = "pidesk_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["cookies", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-http = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-shell = "2"

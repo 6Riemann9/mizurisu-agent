@@ -1,0 +1,219 @@
+@import "tailwindcss";
+@import "highlight.js/styles/github-dark.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Linear Dark-First Design System */
+:root,
+.dark {
+  color-scheme: dark;
+  --bg-canvas: #08090a;
+  --bg-sidebar: #0e0f12;
+  --bg-surface: #131417;
+  --bg-elevated: #1a1b20;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-active: rgba(255, 255, 255, 0.085);
+  --border-hairline: rgba(255, 255, 255, 0.075);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --text-primary: #f7f8f8;
+  --text-secondary: #9a9fa8;
+  --text-muted: #62666f;
+  --accent: #5e6ad2;
+  --accent-hover: #6c79e0;
+  --accent-soft: rgba(94, 106, 210, 0.14);
+  --surface-paper: #0c0d10;
+
+  --status-success: #46a758;
+  --status-warning: #e5a000;
+  --status-danger: #e5484d;
+
+  /* 过渡期兼容别名 */
+  --bg-app: var(--bg-canvas);
+  --bg-panel: var(--bg-surface);
+  --bg-subtle: var(--bg-sidebar);
+  --border-subtle: var(--border-hairline);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.light {
+  color-scheme: light;
+  --bg-canvas: #ffffff;
+  --bg-sidebar: #f7f8f9;
+  --bg-surface: #ffffff;
+  --bg-elevated: #f3f4f6;
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --bg-active: rgba(0, 0, 0, 0.075);
+  --border-hairline: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.15);
+  --text-primary: #111214;
+  --text-secondary: #5c6068;
+  --text-muted: #8a8f98;
+  --accent: #5e6ad2;
+  --accent-hover: #4e5bc4;
+  --accent-soft: rgba(94, 106, 210, 0.1);
+  --surface-paper: #f5f6f8;
+
+  --status-success: #2b9a66;
+  --status-warning: #cc8400;
+  --status-danger: #dc3e42;
+
+  /* 过渡期兼容别名 */
+  --bg-app: var(--bg-canvas);
+  --bg-panel: var(--bg-surface);
+  --bg-subtle: var(--bg-sidebar);
+  --border-subtle: var(--border-hairline);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-mono {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* 极简 Linear 滚动条 */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(140, 145, 155, 0.22);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(140, 145, 155, 0.42);
+}
+
+/* Linear 文档级 Markdown 排版 */
+.prose-chat {
+  font-size: 0.875rem;
+  line-height: 1.65;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.prose-chat > *:first-child {
+  margin-top: 0;
+}
+.prose-chat > *:last-child {
+  margin-bottom: 0;
+}
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3 {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin-top: 1.25em;
+  margin-bottom: 0.45em;
+  color: var(--text-primary);
+}
+.prose-chat h1 { font-size: 1.2rem; }
+.prose-chat h2 { font-size: 1.05rem; }
+.prose-chat h3 { font-size: 0.9375rem; }
+.prose-chat p {
+  margin: 0.55em 0;
+  color: var(--text-primary);
+}
+.prose-chat ul,
+.prose-chat ol {
+  margin: 0.5em 0;
+  padding-left: 1.35em;
+}
+.prose-chat ul { list-style-type: disc; }
+.prose-chat ol { list-style-type: decimal; }
+.prose-chat li {
+  margin: 0.22em 0;
+}
+.prose-chat li::marker {
+  color: var(--text-muted);
+}
+.prose-chat code:not(pre code) {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-hairline);
+  padding: 0.12em 0.38em;
+  border-radius: 0.3rem;
+  font-size: 0.82em;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.prose-chat pre {
+  margin: 0.75em 0;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  background-color: #0b0c0f;
+  padding: 0.8rem 0.95rem;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  border: 1px solid var(--border-hairline);
+}
+.light .prose-chat pre {
+  background-color: #16181d;
+  color: #f4f5f7;
+}
+.prose-chat table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.85em 0;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  display: block;
+  overflow-x: auto;
+}
+.prose-chat th,
+.prose-chat td {
+  border: 1px solid var(--border-hairline);
+  padding: 0.42rem 0.7rem;
+  text-align: left;
+}
+.prose-chat th {
+  background-color: var(--bg-sidebar);
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.prose-chat blockquote {
+  border-left: 2px solid var(--accent);
+  padding-left: 0.85rem;
+  color: var(--text-secondary);
+  margin: 0.65em 0;
+}
+.prose-chat a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.prose-chat a:hover {
+  border-bottom-color: var(--accent);
+}
+.prose-chat hr {
+  border: 0;
+  border-top: 1px solid var(--border-hairline);
+  margin: 1.1em 0;
+}
+
+/* docx-preview 纸张质感适配 */
+.docx-wrapper {
+  background: transparent !important;
+  padding: 20px !important;
+}
+.docx-wrapper > section.docx {
+  background: #ffffff !important;
+  color: #111214 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 0 0 1px var(--border-hairline) !important;
+  margin-bottom: 18px !important;
+  border-radius: 6px;
+}

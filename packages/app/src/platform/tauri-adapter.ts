@@ -1,0 +1,146 @@
+import type {
+  ImportedNativeFile,
+  PlatformAdapter,
+  SessionRequestOptions,
+  SessionResponse,
+  ShellExecutionResult,
+} from "./types";
+
+const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "target", ".next"]);
+const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
+const MAX_IMPORT_FILES = 250;
+
+export class TauriPlatformAdapter implements PlatformAdapter {
+  readonly kind = "desktop" as const;
+  readonly label = "Desktop (Tauri)";
+  readonly canRunShell = true;
+  readonly canMountNativeDir = true;
+  private cachedFetch: typeof fetch | null = null;
+
+  getFetch(): typeof fetch {
+    if (this.cachedFetch) return this.cachedFetch;
+    const wrapped: typeof fetch = async (input, init) => {
+      try {
+        const mod = await import("@tauri-apps/plugin-http");
+        return await mod.fetch(input as RequestInfo | URL, init);
+      } catch {
+        return await globalThis.fetch(input, init);
+      }
+    };
+    this.cachedFetch = wrapped;
+    return wrapped;
+  }
+
+  async sessionRequest(
+    url: string,
+    options: SessionRequestOptions = {}
+  ): Promise<SessionResponse> {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<SessionResponse>("newapi_session_request", {
+        url,
+        method: options.method || "GET",
+        headers: options.headers ?? null,
+        body: options.body ?? null,
+      });
+    } catch (err) {
+      const hasTauriRuntime =
+        typeof window !== "undefined" &&
+        Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+      if (!hasTauriRuntime) {
+        const res = await globalThis.fetch(url, {
+          method: options.method || "GET",
+          headers: options.headers,
+          body: options.body,
+          credentials: "include",
+        });
+        return {
+          status: res.status,
+          ok: res.ok,
+          text: await res.text(),
+        };
+      }
+      throw err;
+    }
+  }
+
+  async clearSessionCookies(): Promise<void> {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke<void>("newapi_clear_cookies");
+    } catch (err) {
+      const hasTauriRuntime =
+        typeof window !== "undefined" &&
+        Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+      if (!hasTauriRuntime) return;
+      throw err;
+    }
+  }
+
+  async exportFile(filename: string, data: Uint8Array, _mimeType: string): Promise<void> {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    const target = await save({
+      defaultPath: filename.split("/").pop() || filename,
+    });
+    if (!target) return;
+    await writeFile(target, data);
+  }
+
+  async pickNativeDirectory(): Promise<{ path: string; files: ImportedNativeFile[] } | null> {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { readDir, readFile, stat } = await import("@tauri-apps/plugin-fs");
+    const selected = await open({ directory: true, multiple: false });
+    if (!selected || typeof selected !== "string") return null;
+
+    const files: ImportedNativeFile[] = [];
+    const walk = async (absDir: string, relPrefix: string): Promise<void> => {
+      if (files.length >= MAX_IMPORT_FILES) return;
+      const entries = await readDir(absDir);
+      for (const entry of entries) {
+        if (files.length >= MAX_IMPORT_FILES) break;
+        if (!entry.name || entry.name.startsWith(".")) continue;
+        const childAbs = `${absDir.replace(/[\\/]+$/, "")}/${entry.name}`;
+        const childRel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+        if (entry.isDirectory) {
+          if (SKIP_DIRS.has(entry.name)) continue;
+          await walk(childAbs, childRel);
+        } else if (entry.isFile) {
+          const info = await stat(childAbs);
+          if (info.size <= MAX_IMPORT_BYTES) {
+            const bytes = await readFile(childAbs);
+            files.push({ path: childRel, data: new Uint8Array(bytes) });
+          }
+        }
+      }
+    };
+
+    await walk(selected, "");
+    return { path: selected, files };
+  }
+
+  async writeToNativeDirectory(
+    rootPath: string,
+    relativePath: string,
+    data: Uint8Array
+  ): Promise<void> {
+    if (!rootPath || relativePath.includes("..")) return;
+    const { mkdir, writeFile } = await import("@tauri-apps/plugin-fs");
+    const normalizedRoot = rootPath.replace(/[\\/]+$/, "");
+    const cleanRel = relativePath.replace(/^\/+/, "");
+    const parts = cleanRel.split("/");
+    if (parts.length > 1) {
+      const parent = `${normalizedRoot}/${parts.slice(0, -1).join("/")}`;
+      await mkdir(parent, { recursive: true });
+    }
+    await writeFile(`${normalizedRoot}/${cleanRel}`, data);
+  }
+
+  async runShellCommand(command: string, cwd?: string): Promise<ShellExecutionResult> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<ShellExecutionResult>("run_workspace_command", {
+      command,
+      cwd: cwd || null,
+    });
+  }
+}
