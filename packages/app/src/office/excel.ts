@@ -350,7 +350,7 @@ function applySheetSpec(wb: ExcelJS.Workbook, spec: ExcelSheetSpec): ExcelJS.Wor
 
 export async function createExcelWorkbook(spec: CreateExcelSpec): Promise<Uint8Array> {
   const wb = new Excel.Workbook();
-  wb.creator = spec.author || "PiDesk Agent";
+  wb.creator = spec.author || "Mizurisu Agent";
   wb.created = new Date();
   for (const sheet of spec.sheets) {
     applySheetSpec(wb, sheet);

@@ -12,11 +12,11 @@ import {
   Sun,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { PROVIDER_GROUP_LABELS, inferModelMetadata } from "../../newapi/client";
+import { DEFAULT_BRAND_NAME, PROVIDER_GROUP_LABELS, inferModelMetadata } from "../../newapi/client";
 import { getPlatformAdapter } from "../../platform";
 import { useAppStore } from "../../store/useAppStore";
 import type { ModelInfo, ProviderGroup } from "../../types";
-import { PiMark } from "../common/FileBadge";
+import { BrandLogo } from "../common/FileBadge";
 
 const THINKING_OPTIONS: Array<{ value: ThinkingLevel; label: string }> = [
   { value: "off", label: "关闭" },
@@ -115,11 +115,9 @@ export function TopBar({
         </button>
 
         <div className="flex items-center gap-1.5 shrink-0 pr-1">
-          <div className="w-6 h-6 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] flex items-center justify-center text-[var(--text-primary)]">
-            <PiMark className="w-3.5 h-3.5" />
-          </div>
+          <BrandLogo className="w-6 h-6 rounded-md shrink-0" />
           <span className="text-[13px] font-medium tracking-tight text-[var(--text-primary)] hidden sm:inline">
-            {config.brandName || "PiDesk"}
+            {config.brandName || DEFAULT_BRAND_NAME}
           </span>
         </div>
 

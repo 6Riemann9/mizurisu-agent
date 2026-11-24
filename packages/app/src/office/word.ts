@@ -236,8 +236,8 @@ export async function createWordDocument(spec: CreateWordSpec): Promise<Uint8Arr
   }
 
   const doc = new Document({
-    creator: "PiDesk Agent",
-    title: spec.title || "PiDesk Document",
+    creator: "Mizurisu Agent",
+    title: spec.title || "Mizurisu Agent Document",
     sections: [
       {
         headers: spec.headerText

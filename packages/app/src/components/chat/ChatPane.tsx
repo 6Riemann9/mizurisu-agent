@@ -14,8 +14,9 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { BUILTIN_SKILLS } from "../../agent/skills";
+import { DEFAULT_BRAND_NAME } from "../../newapi/client";
 import { useAppStore } from "../../store/useAppStore";
-import { PiMark } from "../common/FileBadge";
+import { BrandLogo } from "../common/FileBadge";
 import { MessageItem } from "./MessageItem";
 
 const QUICK_STARTERS = [
@@ -174,11 +175,9 @@ export function ChatPane({
         {!session || session.messages.length === 0 ? (
           <div className="max-w-[760px] mx-auto pt-6 sm:pt-14">
             <div className="flex flex-col items-center text-center mb-8">
-              <div className="w-9 h-9 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] flex items-center justify-center text-[var(--text-primary)] mb-3">
-                <PiMark className="w-5 h-5" />
-              </div>
+              <BrandLogo className="w-11 h-11 rounded-xl mb-3" />
               <h1 className="text-[16px] font-semibold tracking-tight text-[var(--text-primary)]">
-                {config.brandName || "PiDesk"} · 本地三端 Office 工作台
+                {config.brandName || DEFAULT_BRAND_NAME} · 本地三端 Office 工作台
               </h1>
               <p className="mt-1.5 text-[13px] text-[var(--text-muted)] max-w-lg leading-relaxed text-balance">
                 直接读写、清洗与生成 Office 文档，所有更改实时同步右侧工作台。

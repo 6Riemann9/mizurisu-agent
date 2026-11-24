@@ -1,13 +1,13 @@
 [package]
-name = "pidesk-desktop"
+name = "mizurisu-agent-desktop"
 version = "0.1.0"
-description = "PiDesk — 面向 New-API 的纯本机 Office Agent 桌面端"
-authors = ["PiDesk Contributors"]
+description = "Mizurisu Agent — 面向 Mizurisu / New-API 的纯本机 Office Agent 桌面端"
+authors = ["Mizurisu Agent Contributors"]
 license = "MIT"
 edition = "2021"
 
 [lib]
-name = "pidesk_desktop_lib"
+name = "mizurisu_agent_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

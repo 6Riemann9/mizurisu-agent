@@ -247,7 +247,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
     '"Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif';
 
   return `
-.pidesk-slide-scope {
+.mizurisu-slide-scope {
   --slide-w: 1280px;
   --slide-h: 720px;
   --slide-bg: ${p.slideBgSolid};
@@ -270,7 +270,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   color: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .slide {
+.mizurisu-slide-scope .slide {
   width: 1280px;
   height: 720px;
   position: relative;
@@ -287,38 +287,38 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   -webkit-font-smoothing: antialiased;
 }
 
-.pidesk-slide-scope .slide *,
-.pidesk-slide-scope .slide *::before,
-.pidesk-slide-scope .slide *::after {
+.mizurisu-slide-scope .slide *,
+.mizurisu-slide-scope .slide *::before,
+.mizurisu-slide-scope .slide *::after {
   box-sizing: border-box;
 }
 
-.pidesk-slide-scope .slide p,
-.pidesk-slide-scope .slide h1,
-.pidesk-slide-scope .slide h2,
-.pidesk-slide-scope .slide h3,
-.pidesk-slide-scope .slide h4,
-.pidesk-slide-scope .slide ul,
-.pidesk-slide-scope .slide ol {
+.mizurisu-slide-scope .slide p,
+.mizurisu-slide-scope .slide h1,
+.mizurisu-slide-scope .slide h2,
+.mizurisu-slide-scope .slide h3,
+.mizurisu-slide-scope .slide h4,
+.mizurisu-slide-scope .slide ul,
+.mizurisu-slide-scope .slide ol {
   margin: 0;
 }
 
-.pidesk-slide-scope .slide ul,
-.pidesk-slide-scope .slide ol {
+.mizurisu-slide-scope .slide ul,
+.mizurisu-slide-scope .slide ol {
   padding-left: 20px;
 }
 
-.pidesk-slide-scope .slide li {
+.mizurisu-slide-scope .slide li {
   margin-bottom: 8px;
   line-height: 1.5;
   color: ${p.textSecondary};
 }
 
-.pidesk-slide-scope .slide strong {
+.mizurisu-slide-scope .slide strong {
   color: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .slide-header {
+.mizurisu-slide-scope .slide-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -326,12 +326,12 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   margin-bottom: 22px;
 }
 
-.pidesk-slide-scope .slide-header-main {
+.mizurisu-slide-scope .slide-header-main {
   flex: 1;
   min-width: 0;
 }
 
-.pidesk-slide-scope .slide-kicker {
+.mizurisu-slide-scope .slide-kicker {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -340,7 +340,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   margin-bottom: 8px;
 }
 
-.pidesk-slide-scope .slide-h1 {
+.mizurisu-slide-scope .slide-h1 {
   font-size: 54px;
   font-weight: 700;
   line-height: 1.12;
@@ -348,7 +348,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   color: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .slide-h2 {
+.mizurisu-slide-scope .slide-h2 {
   font-size: 32px;
   font-weight: 700;
   line-height: 1.2;
@@ -356,7 +356,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   color: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .slide-h3 {
+.mizurisu-slide-scope .slide-h3 {
   font-size: 20px;
   font-weight: 600;
   line-height: 1.3;
@@ -364,8 +364,8 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   color: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .slide-subtitle,
-.pidesk-slide-scope .slide-lead {
+.mizurisu-slide-scope .slide-subtitle,
+.mizurisu-slide-scope .slide-lead {
   font-size: 18px;
   font-weight: 400;
   line-height: 1.55;
@@ -373,7 +373,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   margin-top: 10px;
 }
 
-.pidesk-slide-scope .slide-body {
+.mizurisu-slide-scope .slide-body {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -382,7 +382,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   gap: 18px;
 }
 
-.pidesk-slide-scope .cover-stage {
+.mizurisu-slide-scope .cover-stage {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -391,20 +391,20 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   padding: 6px 0;
 }
 
-.pidesk-slide-scope .cover-hero {
+.mizurisu-slide-scope .cover-hero {
   display: flex;
   flex-direction: column;
   gap: 14px;
   max-width: 980px;
 }
 
-.pidesk-slide-scope .cover-meta-grid {
+.mizurisu-slide-scope .cover-meta-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
 }
 
-.pidesk-slide-scope .cover-meta-card {
+.mizurisu-slide-scope .cover-meta-card {
   background-color: ${p.surface};
   border: 1px solid ${p.border};
   border-radius: 14px;
@@ -415,7 +415,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   gap: 6px;
 }
 
-.pidesk-slide-scope .cover-meta-value {
+.mizurisu-slide-scope .cover-meta-value {
   font-size: 28px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -423,33 +423,33 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   color: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .cover-meta-value.is-success {
+.mizurisu-slide-scope .cover-meta-value.is-success {
   color: ${p.success};
 }
 
-.pidesk-slide-scope .cover-meta-value.is-accent {
+.mizurisu-slide-scope .cover-meta-value.is-accent {
   color: ${p.accentText};
 }
 
-.pidesk-slide-scope .kpi-grid {
+.mizurisu-slide-scope .kpi-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 20px;
 }
 
-.pidesk-slide-scope .kpi-grid-2 {
+.mizurisu-slide-scope .kpi-grid-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
 }
 
-.pidesk-slide-scope .kpi-grid-4 {
+.mizurisu-slide-scope .kpi-grid-4 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 18px;
 }
 
-.pidesk-slide-scope .kpi-card {
+.mizurisu-slide-scope .kpi-card {
   background-color: ${p.surface};
   border: 1px solid ${p.border};
   border-radius: 16px;
@@ -461,20 +461,20 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   gap: 12px;
 }
 
-.pidesk-slide-scope .kpi-card.is-accent {
+.mizurisu-slide-scope .kpi-card.is-accent {
   background-color: ${p.surfaceElevated};
   background-image: ${p.accentSurface};
   border-color: ${p.borderStrong};
 }
 
-.pidesk-slide-scope .kpi-label {
+.mizurisu-slide-scope .kpi-label {
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: ${p.textSecondary};
 }
 
-.pidesk-slide-scope .kpi-num {
+.mizurisu-slide-scope .kpi-num {
   font-size: 64px;
   font-weight: 700;
   line-height: 1.05;
@@ -483,65 +483,65 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   color: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .kpi-unit {
+.mizurisu-slide-scope .kpi-unit {
   font-size: 26px;
   font-weight: 600;
   color: ${p.textSecondary};
   margin-left: 4px;
 }
 
-.pidesk-slide-scope .kpi-delta {
+.mizurisu-slide-scope .kpi-delta {
   font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: ${p.success};
 }
 
-.pidesk-slide-scope .kpi-delta.is-down {
+.mizurisu-slide-scope .kpi-delta.is-down {
   color: ${p.warning};
 }
 
-.pidesk-slide-scope .kpi-delta.is-accent {
+.mizurisu-slide-scope .kpi-delta.is-accent {
   color: ${p.accentText};
 }
 
-.pidesk-slide-scope .kpi-sub {
+.mizurisu-slide-scope .kpi-sub {
   font-size: 13px;
   line-height: 1.45;
   color: ${p.textMuted};
 }
 
-.pidesk-slide-scope .bento-grid {
+.mizurisu-slide-scope .bento-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 18px;
 }
 
-.pidesk-slide-scope .span-4 {
+.mizurisu-slide-scope .span-4 {
   grid-column: span 4 / span 4;
 }
 
-.pidesk-slide-scope .span-5 {
+.mizurisu-slide-scope .span-5 {
   grid-column: span 5 / span 5;
 }
 
-.pidesk-slide-scope .span-6 {
+.mizurisu-slide-scope .span-6 {
   grid-column: span 6 / span 6;
 }
 
-.pidesk-slide-scope .span-7 {
+.mizurisu-slide-scope .span-7 {
   grid-column: span 7 / span 7;
 }
 
-.pidesk-slide-scope .span-8 {
+.mizurisu-slide-scope .span-8 {
   grid-column: span 8 / span 8;
 }
 
-.pidesk-slide-scope .span-12 {
+.mizurisu-slide-scope .span-12 {
   grid-column: span 12 / span 12;
 }
 
-.pidesk-slide-scope .bento-card {
+.mizurisu-slide-scope .bento-card {
   background-color: ${p.surface};
   border: 1px solid ${p.border};
   border-radius: 16px;
@@ -553,44 +553,44 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   gap: 10px;
 }
 
-.pidesk-slide-scope .bento-card.is-accent {
+.mizurisu-slide-scope .bento-card.is-accent {
   background-color: ${p.surfaceElevated};
   background-image: ${p.accentSurface};
   border-color: ${p.borderStrong};
 }
 
-.pidesk-slide-scope .cols-2 {
+.mizurisu-slide-scope .cols-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 22px;
 }
 
-.pidesk-slide-scope .cols-3 {
+.mizurisu-slide-scope .cols-3 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
 }
 
-.pidesk-slide-scope .card-title {
+.mizurisu-slide-scope .card-title {
   font-size: 18px;
   font-weight: 600;
   line-height: 1.3;
   color: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .card-desc {
+.mizurisu-slide-scope .card-desc {
   font-size: 14px;
   line-height: 1.55;
   color: ${p.textSecondary};
 }
 
-.pidesk-slide-scope .timeline-row {
+.mizurisu-slide-scope .timeline-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
 }
 
-.pidesk-slide-scope .timeline-step {
+.mizurisu-slide-scope .timeline-step {
   background-color: ${p.surface};
   border: 1px solid ${p.border};
   border-radius: 14px;
@@ -601,7 +601,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   gap: 10px;
 }
 
-.pidesk-slide-scope .timeline-num {
+.mizurisu-slide-scope .timeline-num {
   font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -609,19 +609,19 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   color: ${p.accentText};
 }
 
-.pidesk-slide-scope .timeline-title {
+.mizurisu-slide-scope .timeline-title {
   font-size: 16px;
   font-weight: 600;
   color: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .timeline-desc {
+.mizurisu-slide-scope .timeline-desc {
   font-size: 13px;
   line-height: 1.5;
   color: ${p.textSecondary};
 }
 
-.pidesk-slide-scope .slide-table {
+.mizurisu-slide-scope .slide-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 14px;
@@ -632,7 +632,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   overflow: hidden;
 }
 
-.pidesk-slide-scope .slide-table th {
+.mizurisu-slide-scope .slide-table th {
   background-color: ${p.tableHeaderBg};
   color: ${p.tableHeaderText};
   font-weight: 600;
@@ -641,28 +641,28 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   border-bottom: 1px solid ${p.borderStrong};
 }
 
-.pidesk-slide-scope .slide-table td {
+.mizurisu-slide-scope .slide-table td {
   padding: 11px 16px;
   color: ${p.textPrimary};
   border-bottom: 1px solid ${p.border};
 }
 
-.pidesk-slide-scope .slide-table tbody tr:nth-child(even) td {
+.mizurisu-slide-scope .slide-table tbody tr:nth-child(even) td {
   background-color: ${p.tableStripeBg};
 }
 
-.pidesk-slide-scope .slide-table tbody tr:last-child td {
+.mizurisu-slide-scope .slide-table tbody tr:last-child td {
   border-bottom: 0;
 }
 
-.pidesk-slide-scope .badge-row {
+.mizurisu-slide-scope .badge-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
 
-.pidesk-slide-scope .badge {
+.mizurisu-slide-scope .badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -677,25 +677,25 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   white-space: nowrap;
 }
 
-.pidesk-slide-scope .badge.is-accent {
+.mizurisu-slide-scope .badge.is-accent {
   background-color: ${p.accentSoft};
   border-color: ${p.accent};
   color: ${p.accentText};
 }
 
-.pidesk-slide-scope .badge.is-success {
+.mizurisu-slide-scope .badge.is-success {
   background-color: ${p.successSoft};
   border-color: ${p.success};
   color: ${p.success};
 }
 
-.pidesk-slide-scope .badge.is-warning {
+.mizurisu-slide-scope .badge.is-warning {
   background-color: ${p.warningSoft};
   border-color: ${p.warning};
   color: ${p.warning};
 }
 
-.pidesk-slide-scope .callout-strip {
+.mizurisu-slide-scope .callout-strip {
   background-color: ${p.surfaceElevated};
   border: 1px solid ${p.borderStrong};
   border-radius: 12px;
@@ -709,13 +709,13 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   color: ${p.textSecondary};
 }
 
-.pidesk-slide-scope .action-list {
+.mizurisu-slide-scope .action-list {
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
-.pidesk-slide-scope .action-item {
+.mizurisu-slide-scope .action-item {
   background-color: ${p.surfaceElevated};
   border: 1px solid ${p.border};
   border-radius: 12px;
@@ -725,7 +725,7 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   gap: 12px;
 }
 
-.pidesk-slide-scope .action-index {
+.mizurisu-slide-scope .action-index {
   font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -736,27 +736,27 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   flex-shrink: 0;
 }
 
-.pidesk-slide-scope .action-title {
+.mizurisu-slide-scope .action-title {
   font-size: 14px;
   font-weight: 600;
   color: ${p.textPrimary};
   margin-bottom: 3px;
 }
 
-.pidesk-slide-scope .action-desc {
+.mizurisu-slide-scope .action-desc {
   font-size: 13px;
   color: ${p.textSecondary};
   line-height: 1.45;
 }
 
-.pidesk-slide-scope .chart-frame {
+.mizurisu-slide-scope .chart-frame {
   width: 100%;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.pidesk-slide-scope .chart-legend {
+.mizurisu-slide-scope .chart-legend {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -764,53 +764,53 @@ export function getSlideThemeStyles(theme: SlideThemeId): string {
   color: ${p.textSecondary};
 }
 
-.pidesk-slide-scope .chart-legend-accent {
+.mizurisu-slide-scope .chart-legend-accent {
   color: ${p.accentText};
   font-weight: 600;
 }
 
-.pidesk-slide-scope .chart-grid-line {
+.mizurisu-slide-scope .chart-grid-line {
   stroke: ${p.border};
 }
 
-.pidesk-slide-scope .chart-axis-line {
+.mizurisu-slide-scope .chart-axis-line {
   stroke: ${p.borderStrong};
 }
 
-.pidesk-slide-scope .chart-axis-text {
+.mizurisu-slide-scope .chart-axis-text {
   fill: ${p.textMuted};
 }
 
-.pidesk-slide-scope .chart-val-text {
+.mizurisu-slide-scope .chart-val-text {
   fill: ${p.textSecondary};
 }
 
-.pidesk-slide-scope .chart-val-strong {
+.mizurisu-slide-scope .chart-val-strong {
   fill: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .chart-label-text {
+.mizurisu-slide-scope .chart-label-text {
   fill: ${p.textPrimary};
 }
 
-.pidesk-slide-scope .chart-bar-base {
+.mizurisu-slide-scope .chart-bar-base {
   fill: ${p.textMuted};
   opacity: 0.45;
 }
 
-.pidesk-slide-scope .chart-bar-accent {
+.mizurisu-slide-scope .chart-bar-accent {
   fill: ${p.accent};
 }
 
-.pidesk-slide-scope .chart-bar-secondary {
+.mizurisu-slide-scope .chart-bar-secondary {
   fill: ${p.accentSecondary};
 }
 
-.pidesk-slide-scope .chart-bar-success {
+.mizurisu-slide-scope .chart-bar-success {
   fill: ${p.success};
 }
 
-.pidesk-slide-scope .slide-footer {
+.mizurisu-slide-scope .slide-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -909,21 +909,21 @@ export function buildSlidesHtmlDocument(spec: SlideDeckSpec): string {
     `<head>`,
     `  <meta charset="UTF-8" />`,
     `  <meta name="viewport" content="width=1280, initial-scale=1.0" />`,
-    `  <meta name="pidesk-deck" content="${escapeHtmlAttr(metaJson)}" />`,
+    `  <meta name="mizurisu-deck" content="${escapeHtmlAttr(metaJson)}" />`,
     `  <title>${escapeHtmlText(deckTitle)}</title>`,
-    `  <style data-pidesk-host>`,
+    `  <style data-mizurisu-host>`,
     `    html, body { margin: 0; padding: 0; background-color: ${themeMeta.bgHex}; }`,
-    `    .pidesk-slide-scope { display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 24px 0; }`,
+    `    .mizurisu-slide-scope { display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 24px 0; }`,
     `  </style>`,
-    `  <style data-pidesk-theme>`,
+    `  <style data-mizurisu-theme>`,
     themeCss,
     `  </style>`,
-    `  <style data-pidesk-custom>`,
+    `  <style data-mizurisu-custom>`,
     customCss,
     `  </style>`,
     `</head>`,
     `<body data-theme="${theme}">`,
-    `  <div class="pidesk-slide-scope" data-theme="${theme}">`,
+    `  <div class="mizurisu-slide-scope" data-theme="${theme}">`,
     sections,
     `  </div>`,
     `</body>`,
@@ -999,7 +999,7 @@ export function parseSlidesHtmlWithRegex(html: string): SlideDeckSpec {
   const metaTags = html.match(/<meta\b[^>]*>/gi) || [];
   for (const tag of metaTags) {
     const name = readTagAttr(tag, "name");
-    if (name === "pidesk-deck") {
+    if (name === "mizurisu-deck" || name === "pidesk-deck") {
       const content = readTagAttr(tag, "content");
       if (content) {
         try {
@@ -1032,7 +1032,7 @@ export function parseSlidesHtmlWithRegex(html: string): SlideDeckSpec {
 
   let customCss: string | undefined;
   const customStyleMatch = html.match(
-    /<style\b[^>]*data-pidesk-custom[^>]*>([\s\S]*?)<\/style>/i
+    /<style\b[^>]*(?:data-mizurisu-custom|data-pidesk-custom)[^>]*>([\s\S]*?)<\/style>/i
   );
   if (customStyleMatch) {
     const cssText = customStyleMatch[1].trim();
@@ -1069,7 +1069,9 @@ export function parseSlidesHtmlDocument(html: string): SlideDeckSpec {
     let title = "";
     let themeRaw: string | undefined;
 
-    const metaEl = doc.querySelector('meta[name="pidesk-deck"]');
+    const metaEl = doc.querySelector(
+      'meta[name="mizurisu-deck"], meta[name="pidesk-deck"]'
+    );
     const metaContent = metaEl?.getAttribute("content");
     if (metaContent) {
       try {
@@ -1086,7 +1088,11 @@ export function parseSlidesHtmlDocument(html: string): SlideDeckSpec {
 
     if (!themeRaw) {
       themeRaw =
-        doc.querySelector(".pidesk-slide-scope[data-theme]")?.getAttribute("data-theme") ||
+        doc
+          .querySelector(
+            ".mizurisu-slide-scope[data-theme], .pidesk-slide-scope[data-theme]"
+          )
+          ?.getAttribute("data-theme") ||
         doc.body?.getAttribute("data-theme") ||
         doc.documentElement?.getAttribute("data-theme") ||
         undefined;
@@ -1096,7 +1102,9 @@ export function parseSlidesHtmlDocument(html: string): SlideDeckSpec {
       title = doc.querySelector("title")?.textContent?.trim() || "";
     }
 
-    const customStyleEl = doc.querySelector("style[data-pidesk-custom]");
+    const customStyleEl = doc.querySelector(
+      "style[data-mizurisu-custom], style[data-pidesk-custom]"
+    );
     const customCssRaw = customStyleEl?.textContent?.trim();
     const customCss = customCssRaw ? customCssRaw : undefined;
 
@@ -1296,7 +1304,7 @@ function createOffscreenSlideHost(
   mode: "validate" | "export"
 ): { host: HTMLDivElement; slideEls: HTMLElement[] } {
   const host = document.createElement("div");
-  host.className = "pidesk-slide-scope";
+  host.className = "mizurisu-slide-scope";
   host.setAttribute("data-theme", deck.theme);
   host.setAttribute("aria-hidden", "true");
   host.style.position = "fixed";
@@ -1495,7 +1503,7 @@ export function createStarterDemoSlidesHtml(): string {
 <div class="cover-stage">
   <div class="badge-row" style="justify-content: space-between; width: 100%;">
     <div class="badge is-accent">2026 Q2 EXECUTIVE BRIEF</div>
-    <div class="badge">PiDesk Office Intelligence</div>
+    <div class="badge">Mizurisu Agent Intelligence</div>
   </div>
 
   <div class="cover-hero">
@@ -1575,7 +1583,7 @@ export function createStarterDemoSlidesHtml(): string {
 </div>
 
 <div class="slide-footer">
-  <span>PiDesk 2026 Q2 经营复盘</span>
+  <span>Mizurisu Agent 2026 Q2 经营复盘</span>
   <span>02 / 04</span>
 </div>`,
       },
@@ -1632,7 +1640,7 @@ export function createStarterDemoSlidesHtml(): string {
 </div>
 
 <div class="slide-footer">
-  <span>PiDesk 2026 Q2 经营复盘</span>
+  <span>Mizurisu Agent 2026 Q2 经营复盘</span>
   <span>03 / 04</span>
 </div>`,
       },
@@ -1737,7 +1745,7 @@ export function createStarterDemoSlidesHtml(): string {
 </div>
 
 <div class="slide-footer">
-  <span>PiDesk 2026 Q2 经营复盘 · 数据对齐 示例_季度销售数据.xlsx</span>
+  <span>Mizurisu Agent 2026 Q2 经营复盘 · 数据对齐 示例_季度销售数据.xlsx</span>
   <span>04 / 04</span>
 </div>`,
       },

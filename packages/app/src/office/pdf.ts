@@ -83,7 +83,7 @@ function canUseCanvasRendering(): boolean {
 async function createPdfViaCanvasPages(spec: CreatePdfSpec): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.setTitle(spec.title);
-  pdfDoc.setCreator("PiDesk Agent");
+  pdfDoc.setCreator("Mizurisu Agent");
 
   const pageW = 1190;
   const pageH = 1684;
@@ -196,7 +196,7 @@ export async function createPdfDocument(spec: CreatePdfSpec): Promise<Uint8Array
 
   const pdfDoc = await PDFDocument.create();
   pdfDoc.setTitle(spec.title);
-  pdfDoc.setCreator("PiDesk Agent");
+  pdfDoc.setCreator("Mizurisu Agent");
 
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);

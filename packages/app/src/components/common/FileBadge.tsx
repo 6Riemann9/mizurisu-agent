@@ -7,22 +7,29 @@ import {
   FileType,
   Presentation,
 } from "lucide-react";
+import mizurisuLogo from "../../assets/mizurisu-logo.png";
 import type { OfficeFileCategory } from "../../types";
 
-/** 极简单色 Pi 线条几何标志 */
-export function PiMark({ className = "w-4 h-4" }: { className?: string }) {
+/** Mizurisu Agent 官方品牌 Logo */
+export function BrandLogo({
+  className = "w-6 h-6 rounded-md",
+  alt = "Mizurisu Agent",
+}: {
+  className?: string;
+  alt?: string;
+}) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
-      <path
-        d="M4.5 7.25H19.5M8.75 7.25V17.5M15.25 7.25V15.25C15.25 16.5 16.15 17.25 17.5 17.25"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    <img
+      src={mizurisuLogo}
+      alt={alt}
+      draggable={false}
+      className={`${className} object-cover select-none shrink-0`}
+    />
   );
 }
+
+/** @deprecated 请优先使用 BrandLogo */
+export const PiMark = BrandLogo;
 
 /** 单色 Linear 风格文件图标，摒弃高饱和多色渲染 */
 export function FileIcon({

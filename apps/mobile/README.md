@@ -1,6 +1,6 @@
-# PiDesk Mobile（Android / iOS）
+# Mizurisu Agent Mobile（Android / iOS）
 
-移动端壳基于 **Capacitor 8**，直接打包 `packages/app/dist`，并默认启用 `CapacitorHttp` 以免跨域直连你的 New-API 中转站。
+移动端壳基于 **Capacitor 8**，直接打包 `packages/app/dist`，并默认启用 `CapacitorHttp` 以免跨域直连 Mizurisu / New-API 中转站。
 
 ## 首次生成原生工程与同步构建
 
@@ -9,12 +9,12 @@
 pnpm sync:mobile
 
 # 2. 首次添加 Android / iOS 原生目录（在 apps/mobile 下执行）
-pnpm --filter @pidesk/mobile add:android
+pnpm --filter @mizurisu-agent/mobile add:android
 # macOS 可选：
-pnpm --filter @pidesk/mobile add:ios
+pnpm --filter @mizurisu-agent/mobile add:ios
 
 # 3. 打开 Android Studio / Xcode 编译打包 APK / IPA
-pnpm --filter @pidesk/mobile open:android
+pnpm --filter @mizurisu-agent/mobile open:android
 ```
 
 ## 注意事项

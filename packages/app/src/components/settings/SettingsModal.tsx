@@ -66,7 +66,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
   const [showKey, setShowKey] = useState(false);
   const [customModelInput, setCustomModelInput] = useState("");
   const [testSuccessMsg, setTestSuccessMsg] = useState<string | null>(null);
-  const [newTokenName, setNewTokenName] = useState("PiDesk");
+  const [newTokenName, setNewTokenName] = useState("Mizurisu Agent");
   const [tokenNotice, setTokenNotice] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -108,13 +108,13 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
   };
 
   const handleCreateToken = async () => {
-    const name = newTokenName.trim() || "PiDesk";
+    const name = newTokenName.trim() || "Mizurisu Agent";
     setTokenNotice(null);
     setTokenError(null);
     try {
       const created = await createAccountToken(name);
       setTokenNotice(`已创建并启用令牌「${created.name}」`);
-      setNewTokenName("PiDesk");
+      setNewTokenName("Mizurisu Agent");
     } catch (err) {
       setTokenError(err instanceof Error ? err.message : String(err));
     }
@@ -153,7 +153,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
     const bundle = await exportBackupBundle();
     const bytes = new TextEncoder().encode(JSON.stringify(bundle, null, 2));
     await getPlatformAdapter().exportFile(
-      `pidesk-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      `mizurisu-agent-backup-${new Date().toISOString().slice(0, 10)}.json`,
       bytes,
       "application/json"
     );
@@ -373,7 +373,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                     <input
                       value={newTokenName}
                       onChange={(e) => setNewTokenName(e.target.value)}
-                      placeholder="新令牌名称，例如 PiDesk"
+                      placeholder="新令牌名称，例如 Mizurisu Agent"
                       className="flex-1 h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)]"
                     />
                     <button
@@ -485,13 +485,13 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
 
               <section className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] p-3.5 space-y-1.5">
                 <div className="text-[11px] font-medium text-[var(--text-primary)]">
-                  New-API 后台一键免登接入（站长参考）
+                  Mizurisu 后台一键免登接入（站长参考）
                 </div>
                 <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
                   将构建产物部署在站点同域名子路径（如 <code className="font-mono">/agent/</code>）可自动复用登录 Cookie 免登；也可在后台快捷聊天入口填入下方模板实现点击直达并自动擦除地址栏参数：
                 </p>
                 <div className="px-2.5 py-1.5 rounded bg-[var(--bg-surface)] border border-[var(--border-hairline)] font-mono text-[10px] text-[var(--text-secondary)] select-all break-all">
-                  https://your-newapi-domain.com/agent/#key=&#123;key&#125;&amp;address=&#123;address&#125;
+                  https://www.mizurisu.com/agent/#key=&#123;key&#125;&amp;address=&#123;address&#125;
                 </div>
               </section>
             </>
@@ -507,7 +507,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                 <input
                   value={config.brandName}
                   onChange={(e) => updateConfig({ brandName: e.target.value })}
-                  placeholder="PiDesk"
+                  placeholder="Mizurisu Agent"
                   className="w-full h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)]"
                 />
               </div>
@@ -622,7 +622,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                   <div>{modelsError}</div>
                   {getPlatformAdapter().kind === "web" && (
                     <p className="text-[11px] text-[var(--text-muted)]">
-                      提示：浏览器如遇 CORS 跨域限制，请在 New-API 反向代理放行 CORS 或使用 PiDesk 桌面客户端。
+                      提示：浏览器如遇 CORS 跨域限制，请在 New-API 反向代理放行 CORS 或使用 Mizurisu Agent 桌面客户端。
                     </p>
                   )}
                 </div>

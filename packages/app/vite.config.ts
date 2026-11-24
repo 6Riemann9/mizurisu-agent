@@ -19,7 +19,7 @@ export default defineConfig(({ mode }) => {
   const defaultProxyTarget = (
     env.VITE_DEFAULT_NEWAPI_URL ||
     process.env.VITE_DEFAULT_NEWAPI_URL ||
-    ""
+    "https://www.mizurisu.com"
   ).trim();
 
   const sharedProxy = defaultProxyTarget

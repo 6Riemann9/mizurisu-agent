@@ -141,7 +141,7 @@ describe("VFS 快照、Office 工具集与 PiAgentRunner", () => {
     );
 
     const config: NewApiConfig = {
-      brandName: "PiDesk",
+      brandName: "Mizurisu Agent",
       baseUrl: "https://relay.example.com",
       apiKey: "sk-mock",
       protocolMode: "compatible",

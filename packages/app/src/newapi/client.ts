@@ -11,11 +11,12 @@ import type {
 } from "../types";
 
 export const DEFAULT_NEWAPI_URL =
-  (import.meta.env?.VITE_DEFAULT_NEWAPI_URL as string | undefined)?.trim() || "";
+  (import.meta.env?.VITE_DEFAULT_NEWAPI_URL as string | undefined)?.trim() ||
+  "https://www.mizurisu.com";
 
 export const DEFAULT_BRAND_NAME =
   (import.meta.env?.VITE_APP_BRAND_NAME as string | undefined)?.trim() ||
-  "PiDesk";
+  "Mizurisu Agent";
 
 /**
  * 将用户输入的 New-API 地址归一化为不含尾斜杠与 /v1 /v1beta 的站点根地址
@@ -44,7 +45,7 @@ function isSameStationHost(urlA: string, urlB: string): boolean {
 
 /**
  * 解析当前运行环境实际请求前缀：
- * - Web 同源部署（如直接挂在 your-newapi-domain.com/agent/）：返回 ""，走相对路径并自动携带站点登录 Cookie
+ * - Web 同源部署（如直接挂在 www.mizurisu.com/agent/）：返回 ""，走相对路径并自动携带站点登录 Cookie
  * - Web 本地开发模式且目标为默认中转站：返回 ""，自动走 Vite dev proxy（解决 localhost CORS 拦截）
  * - Desktop / Mobile 或其他外站域名：返回完整的归一化 https://... 地址
  */

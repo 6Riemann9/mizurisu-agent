@@ -8,7 +8,7 @@ import type {
   WorkspaceFileRecord,
 } from "../types";
 
-interface PiDeskSchema extends DBSchema {
+interface MizurisuAgentSchema extends DBSchema {
   kv: {
     key: string;
     value: unknown;
@@ -34,10 +34,10 @@ interface PiDeskSchema extends DBSchema {
   };
 }
 
-const DB_NAME = "pidesk-local-db";
+const DB_NAME = "mizurisu-agent-db";
 const DB_VERSION = 1;
 
-let dbPromise: Promise<IDBPDatabase<PiDeskSchema>> | null = null;
+let dbPromise: Promise<IDBPDatabase<MizurisuAgentSchema>> | null = null;
 
 const memoryFallback = {
   kv: new Map<string, unknown>(),
@@ -51,10 +51,10 @@ function hasIndexedDb(): boolean {
   return typeof indexedDB !== "undefined";
 }
 
-export async function getDb(): Promise<IDBPDatabase<PiDeskSchema> | null> {
+export async function getDb(): Promise<IDBPDatabase<MizurisuAgentSchema> | null> {
   if (!hasIndexedDb()) return null;
   if (!dbPromise) {
-    dbPromise = openDB<PiDeskSchema>(DB_NAME, DB_VERSION, {
+    dbPromise = openDB<MizurisuAgentSchema>(DB_NAME, DB_VERSION, {
       upgrade(db) {
         if (!db.objectStoreNames.contains("kv")) {
           db.createObjectStore("kv");

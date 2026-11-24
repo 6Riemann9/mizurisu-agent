@@ -801,7 +801,7 @@ export function SlidesViewer({
 
             <div
               data-theme={deck.theme}
-              className={`pidesk-slide-scope relative shrink-0 rounded-[6px] overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.3)] ring-1 ${
+              className={`mizurisu-slide-scope relative shrink-0 rounded-[6px] overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.3)] ring-1 ${
                 isEditingSlide
                   ? "ring-[var(--accent)]"
                   : "ring-[var(--border-hairline)]"
@@ -873,7 +873,7 @@ export function SlidesViewer({
           <div className="shrink-0 border-t border-[var(--border-hairline)] bg-[var(--bg-sidebar)]">
             <div
               data-theme={deck.theme}
-              className="pidesk-slide-scope px-3 py-2 flex items-center gap-2 overflow-x-auto"
+              className="mizurisu-slide-scope px-3 py-2 flex items-center gap-2 overflow-x-auto"
             >
               <style>{scopedCss}</style>
               {deck.slides.map((slide, idx) => {
@@ -981,7 +981,7 @@ export function SlidesViewer({
         >
           <div
             data-theme={deck.theme}
-            className="pidesk-slide-scope relative shrink-0 rounded-[4px] overflow-hidden shadow-2xl"
+            className="mizurisu-slide-scope relative shrink-0 rounded-[4px] overflow-hidden shadow-2xl"
             style={{
               width: Math.round(SLIDE_WIDTH * fullscreenScale),
               height: Math.round(SLIDE_HEIGHT * fullscreenScale),

@@ -295,7 +295,9 @@ export const useAppStore = create<AppState>((set, get) => {
         ...savedConfig,
         baseUrl: savedConfig?.baseUrl?.trim() || defaultsConfig.baseUrl,
         brandName:
-          savedConfig?.brandName?.trim() && savedConfig.brandName !== "PiDesk"
+          savedConfig?.brandName?.trim() &&
+          savedConfig.brandName !== "PiDesk" &&
+          savedConfig.brandName !== "Mizurisu Agent"
             ? savedConfig.brandName
             : defaultsConfig.brandName,
       };
@@ -380,7 +382,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
       const platform = getPlatformAdapter();
 
-      // 1. 优先处理从 New-API 后台一键跳转携带的一次性 Key
+      // 1. 优先处理从 Mizurisu / New-API 后台一键跳转携带的一次性 Key
       if (typeof window !== "undefined") {
         const urlAuth = extractAuthFromUrl(window.location.href);
         if (urlAuth) {
@@ -673,7 +675,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const platform = getPlatformAdapter();
         const authHeaders = buildNewApiAuthHeaders(current.user?.id, current.accessToken);
         const created = await createNewApiToken(current.baseUrl, authHeaders, platform, {
-          name: name.trim() || "PiDesk",
+          name: name.trim() || "Mizurisu Agent",
           group: current.user?.group,
         });
 

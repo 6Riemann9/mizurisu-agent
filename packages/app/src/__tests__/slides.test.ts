@@ -54,7 +54,7 @@ describe("HTML-First 幻灯片引擎与工具闭环", () => {
 
     for (const theme of SLIDE_THEMES) {
       const css = getSlideThemeStyles(theme.id);
-      expect(css).toContain(".pidesk-slide-scope .slide");
+      expect(css).toContain(".mizurisu-slide-scope .slide");
       expect(css).toContain("width: 1280px;");
       expect(css).toContain("height: 720px;");
       expect(css).toContain("font-size: 64px;");
@@ -77,7 +77,7 @@ describe("HTML-First 幻灯片引擎与工具闭环", () => {
     const spec: SlideDeckSpec = {
       title: 'Q2 "核心" 复盘 & 路线图',
       theme: "linear-dark",
-      customCss: ".pidesk-slide-scope .custom-tag { color: #38bdf8; }",
+      customCss: ".mizurisu-slide-scope .custom-tag { color: #38bdf8; }",
       slides: [
         {
           title: '封面 <Beta> & "2026"',
@@ -93,10 +93,10 @@ describe("HTML-First 幻灯片引擎与工具闭环", () => {
     };
 
     const html = buildSlidesHtmlDocument(spec);
-    expect(html).toContain('<meta name="pidesk-deck"');
+    expect(html).toContain('<meta name="mizurisu-deck"');
     expect(html).toContain('data-theme="linear-dark"');
-    expect(html).toContain("<style data-pidesk-theme>");
-    expect(html).toContain("<style data-pidesk-custom>");
+    expect(html).toContain("<style data-mizurisu-theme>");
+    expect(html).toContain("<style data-mizurisu-custom>");
     expect(html).toContain('data-slide-index="1"');
     expect(html).toContain("width: 1280px; height: 720px; position: relative; overflow: hidden;");
 
@@ -141,7 +141,7 @@ describe("HTML-First 幻灯片引擎与工具闭环", () => {
       title: "黑名单校验",
       theme: "apple-keynote",
       customCss: `
-        .pidesk-slide-scope .glass { backdrop-filter: blur(12px); height: 80vh; }
+        .mizurisu-slide-scope .glass { backdrop-filter: blur(12px); height: 80vh; }
         @keyframes pulse { from { opacity: 0.4; } to { opacity: 1; } }
       `,
       slides: [
@@ -224,7 +224,7 @@ describe("HTML-First 幻灯片引擎与工具闭环", () => {
     exportToPptxMock.mockImplementationOnce(async (slideEls: HTMLElement[]) => {
       capturedSlideCount = slideEls.length;
       const host = slideEls[0]?.parentElement;
-      expect(host?.classList.contains("pidesk-slide-scope")).toBe(true);
+      expect(host?.classList.contains("mizurisu-slide-scope")).toBe(true);
       expect(host?.style.visibility).toBe("visible");
       expect(host?.style.opacity).toBe("1");
       capturedHostTransform = host?.style.transform || "";
@@ -244,12 +244,12 @@ describe("HTML-First 幻灯片引擎与工具闭环", () => {
       })
     );
     expect(Array.from(bytes)).toEqual([1, 2, 3, 4]);
-    expect(document.querySelector(".pidesk-slide-scope")).toBeNull();
+    expect(document.querySelector(".mizurisu-slide-scope")).toBeNull();
 
     // 即使 exportToPptx 抛错也必须清理离屏节点
     exportToPptxMock.mockRejectedValueOnce(new Error("mock export error"));
     await expect(exportHtmlSlidesToPptxBytes(demoHtml)).rejects.toThrow("mock export error");
-    expect(document.querySelector(".pidesk-slide-scope")).toBeNull();
+    expect(document.querySelector(".mizurisu-slide-scope")).toBeNull();
   });
 
   it("VFS 支持空工作区种子初始化与既有旧工作区单次补种示例幻灯片", async () => {
@@ -361,7 +361,7 @@ describe("HTML-First 幻灯片引擎与工具闭环", () => {
     expect(pptSkill?.systemHint).toContain("60 字");
 
     const prompt = buildSystemPrompt({
-      brandName: "PiDesk",
+      brandName: "Mizurisu Agent",
       platformKind: "web",
       files: [],
       activeSkill: pptSkill,

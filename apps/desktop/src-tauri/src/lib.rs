@@ -161,5 +161,5 @@ pub fn run() {
             newapi_clear_cookies
         ])
         .run(tauri::generate_context!())
-        .expect("error while running PiDesk desktop application");
+        .expect("error while running Mizurisu Agent desktop application");
 }

@@ -2,7 +2,7 @@ import { ExternalLink, Eye, EyeOff, Globe, Loader2, Moon, Sun } from "lucide-rea
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { DEFAULT_BRAND_NAME, DEFAULT_NEWAPI_URL } from "../../newapi/client";
 import { useAppStore } from "../../store/useAppStore";
-import { PiMark } from "../common/FileBadge";
+import { BrandLogo } from "../common/FileBadge";
 
 type LoginMode = "account" | "apikey";
 
@@ -211,11 +211,9 @@ export function LoginView() {
 
       {/* 极简居中登录面板 */}
       <div className="w-full max-w-[368px] rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] p-6">
-        {/* 单色几何标志 + 标题 */}
+        {/* 品牌 Logo + 标题 */}
         <div className="flex flex-col items-center text-center mb-5">
-          <div className="w-9 h-9 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-elevated)] flex items-center justify-center text-[var(--text-primary)] mb-3">
-            <PiMark className="w-5 h-5" />
-          </div>
+          <BrandLogo className="w-11 h-11 rounded-xl mb-3" />
           <h1 className="text-[15px] font-semibold tracking-tight text-[var(--text-primary)]">
             {siteStatus?.systemName || config.brandName || DEFAULT_BRAND_NAME}
           </h1>

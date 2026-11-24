@@ -241,8 +241,8 @@ export async function createPptPresentation(spec: CreatePptSpec): Promise<Uint8A
     (PptxGenJS as unknown as { default?: typeof PptxGenJS }).default ?? PptxGenJS;
   const pptx = new PptxCtor();
   pptx.layout = "LAYOUT_WIDE";
-  pptx.author = spec.author || "PiDesk Agent";
-  pptx.title = spec.title || "PiDesk Presentation";
+  pptx.author = spec.author || "Mizurisu Agent";
+  pptx.title = spec.title || "Mizurisu Agent Presentation";
 
   const palette = THEMES[spec.theme || "business-navy"];
 

@@ -29,7 +29,7 @@ import { useAppStore } from "../store/useAppStore";
 import type { AuthSession, ModelInfo, NewApiConfig } from "../types";
 
 const baseConfig: NewApiConfig = {
-  brandName: "PiDesk",
+  brandName: "Mizurisu Agent",
   baseUrl: "https://relay.example.com/v1/",
   apiKey: "sk-test-123456",
   protocolMode: "auto",
@@ -389,7 +389,7 @@ describe("New-API 适配器与账号鉴权", () => {
     expect(progressMsgs.length).toBeGreaterThanOrEqual(4);
   });
 
-  it("账户无可用明文令牌时自动创建名为 PiDesk 的无限额令牌", async () => {
+  it("账户无可用明文令牌时自动创建名为 Mizurisu Agent 的无限额令牌", async () => {
     let created = false;
     const sessionRequest = vi.fn(
       async (url: string, opts?: { method?: string; body?: string }) => {
@@ -417,7 +417,7 @@ describe("New-API 适配器与账号鉴权", () => {
             data: [
               {
                 id: 99,
-                name: "PiDesk",
+                name: "Mizurisu Agent",
                 key: "sk-auto****8888",
                 status: 1,
                 remain_quota: 0,
@@ -429,7 +429,7 @@ describe("New-API 适配器与账号鉴权", () => {
         }
         if (url.endsWith("/api/token/") && opts?.method === "POST") {
           const body = JSON.parse(opts.body || "{}") as Record<string, unknown>;
-          expect(body.name).toBe("PiDesk");
+          expect(body.name).toBe("Mizurisu Agent");
           expect(body.unlimited_quota).toBe(true);
           expect(body.expired_time).toBe(-1);
           created = true;
@@ -439,7 +439,7 @@ describe("New-API 适配器与账号鉴权", () => {
         if (url.endsWith("/api/token/99/key") && opts?.method === "POST") {
           return jsonSessionRes({
             success: true,
-            data: { key: "sk-autocreatedpidesk8888" },
+            data: { key: "sk-autocreatedmizurisu8888" },
           });
         }
         if (url.endsWith("/api/user/logout")) {
@@ -457,7 +457,7 @@ describe("New-API 适配器与账号鉴权", () => {
 
     expect(created).toBe(true);
     expect(session.activeTokenId).toBe(99);
-    expect(session.activeApiKey).toBe("sk-autocreatedpidesk8888");
+    expect(session.activeApiKey).toBe("sk-autocreatedmizurisu8888");
 
     await logoutNewApiAccount(
       session.baseUrl,
@@ -646,13 +646,13 @@ describe("New-API 适配器与账号鉴权", () => {
     ).toBe("$1.00");
 
     expect(
-      extractAuthFromUrl("https://relay.example.com/agent/#key=sk-abc123&address=https://relay.example.com/")
+      extractAuthFromUrl("https://www.mizurisu.com/agent/#key=sk-abc123&address=https://www.mizurisu.com/")
     ).toEqual({
       apiKey: "sk-abc123",
-      baseUrl: "https://relay.example.com",
+      baseUrl: "https://www.mizurisu.com",
     });
 
-    expect(extractAuthFromUrl("https://relay.example.com/agent/")).toBeNull();
+    expect(extractAuthFromUrl("https://www.mizurisu.com/agent/")).toBeNull();
   });
 
   it("同源已有登录会话时静默恢复身份并自动拉取 Key，未登录则返回 null", async () => {

@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    pidesk_desktop_lib::run()
+    mizurisu_agent_desktop_lib::run()
 }

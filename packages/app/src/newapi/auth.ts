@@ -524,7 +524,7 @@ export async function resolvePlaintextKeyForToken(
 }
 
 /**
- * 创建新的 New-API 令牌（默认名为 PiDesk 且无限额），并提取其明文 Key
+ * 创建新的 New-API 令牌（默认名为 Mizurisu Agent 且无限额），并提取其明文 Key
  */
 export async function createNewApiToken(
   baseUrl: string,
@@ -542,7 +542,7 @@ export async function createNewApiToken(
   if (!normalized) throw new Error("请先填写 New-API 站点地址");
   const root = resolveEffectiveBaseUrl(normalized);
 
-  const tokenName = options?.name?.trim() || "PiDesk";
+  const tokenName = options?.name?.trim() || "Mizurisu Agent";
   const payload = {
     name: tokenName,
     remain_quota: options?.remainQuota ?? 0,
@@ -664,9 +664,9 @@ async function bootstrapTokensForUser(
   }
 
   if (!activeApiKey) {
-    onProgress?.("未找到可用的明文令牌，正在自动创建 PiDesk 无限额令牌...");
+    onProgress?.("未找到可用的明文令牌，正在自动创建 Mizurisu Agent 无限额令牌...");
     const created = await createNewApiToken(normalizedBaseUrl, authHeaders, platform, {
-      name: "PiDesk",
+      name: "Mizurisu Agent",
       group: user.group,
     });
     activeTokenId = created.id;
@@ -690,7 +690,7 @@ async function bootstrapTokensForUser(
 
 /**
  * 一键完成 New-API 账号密码鉴权、信息同步与可用 Key 引导：
- * 站点状态 -> 账号登录 -> 用户详情与令牌列表 -> 揭露首个可用启用令牌（若无可用明文令牌则自动新建 PiDesk 令牌）
+ * 站点状态 -> 账号登录 -> 用户详情与令牌列表 -> 揭露首个可用启用令牌（若无可用明文令牌则自动新建 Mizurisu Agent 令牌）
  */
 export async function authenticateAndBootstrapKey(
   params: {

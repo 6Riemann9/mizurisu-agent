@@ -62,7 +62,7 @@ describe("纯 JS 内置 Office 读写闭环", () => {
     const bytes = await createWordDocument({
       title: "季度经营分析报告",
       subtitle: "2026 Q2 内部审阅版",
-      headerText: "PiDesk 自动生成",
+      headerText: "Mizurisu Agent 自动生成",
       blocks: [
         { type: "heading", level: 1, text: "一、核心经营结论" },
         { type: "paragraph", text: "本季度中转站调用量与 SaaS 收入同步增长 28%。" },
@@ -130,7 +130,7 @@ describe("纯 JS 内置 Office 读写闭环", () => {
 
   it("PDF: 生成、读取文本与多文档合并", async () => {
     const pdf1 = await createPdfDocument({
-      title: "PiDesk Quarterly Summary",
+      title: "Mizurisu Agent Quarterly Summary",
       subtitle: "Generated locally",
       paragraphs: ["Revenue grew by 25 percent in Q2 with zero backend overhead."],
     });
@@ -141,7 +141,7 @@ describe("纯 JS 内置 Office 读写闭环", () => {
 
     const read1 = await readPdfDocument(pdf1);
     expect(read1.pageCount).toBe(1);
-    expect(read1.pages[0].text).toContain("PiDesk Quarterly Summary");
+    expect(read1.pages[0].text).toContain("Mizurisu Agent Quarterly Summary");
     expect(read1.pages[0].text).toContain("Revenue grew by 25 percent");
 
     const merged = await mergePdfDocuments([pdf1, pdf2]);

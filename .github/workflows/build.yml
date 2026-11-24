@@ -24,7 +24,7 @@ jobs:
       - run: pnpm build
       - uses: actions/upload-artifact@v4
         with:
-          name: pidesk-web-dist
+          name: mizurisu-agent-web-dist
           path: packages/app/dist
 
   desktop-tauri:
@@ -58,8 +58,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: pnpm install
-      - run: pnpm --filter @pidesk/desktop tauri build --target ${{ matrix.target }}
+      - run: pnpm --filter @mizurisu-agent/desktop tauri build --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: pidesk-desktop-${{ matrix.platform }}
+          name: mizurisu-agent-desktop-${{ matrix.platform }}
           path: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
