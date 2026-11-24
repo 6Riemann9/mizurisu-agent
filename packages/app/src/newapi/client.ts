@@ -400,6 +400,38 @@ function extractUserModelsPayload(payload: unknown): Array<{ id: string; owned_b
   return out;
 }
 
+const TRANSIENT_RETRY_STATUSES = new Set([500, 502, 503, 504]);
+
+/**
+ * 仅针对幂等 GET 请求对瞬时网关状态码（500/502/503/504）或网络/TLS 断连执行有限次静默重试；
+ * 401/403/404 等确定性客户端错误立即返回，避免无意义重试。
+ */
+async function fetchWithTransientRetry(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  maxRetries = 1
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetchImpl(url, init);
+      if (!TRANSIENT_RETRY_STATUSES.has(res.status) || attempt >= maxRetries) {
+        return res;
+      }
+      // 丢弃失败响应体以释放连接，短暂退避后重试
+      await res.text().catch(() => "");
+    } catch (err) {
+      lastError = err;
+      if (init.signal?.aborted || attempt >= maxRetries) {
+        throw err;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw lastError instanceof Error ? lastError : new Error("请求失败");
+}
+
 export async function fetchNewApiModels(
   config: NewApiConfig,
   fetchImpl: typeof fetch,
@@ -429,7 +461,7 @@ export async function fetchNewApiModels(
 
   if (apiKey) {
     try {
-      const res = await fetchImpl(`${root}/v1/models`, {
+      const res = await fetchWithTransientRetry(fetchImpl, `${root}/v1/models`, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -511,10 +543,14 @@ export async function fetchNewApiBilling(
   };
 
   try {
-    const subRes = await fetchImpl(`${root}/v1/dashboard/billing/subscription`, {
-      method: "GET",
-      headers,
-    });
+    const subRes = await fetchWithTransientRetry(
+      fetchImpl,
+      `${root}/v1/dashboard/billing/subscription`,
+      {
+        method: "GET",
+        headers,
+      }
+    );
 
     if (!subRes.ok) {
       return {
@@ -710,19 +746,24 @@ export function classifyApiError(rawError: string, baseUrl?: string): ApiErrorDi
     };
   }
 
-  // 6. 浏览器跨域 CORS 或网络中断
+  // 6. 浏览器跨域 CORS、本地代理 TLS 握手中断或网络中断
   if (
-    /(?:failed to fetch|networkerror|network request failed|cors|access-control-allow-origin|err_connection|econnrefused|enotfound|etimedout|load failed|fetch failed|网络中断|网络连接|跨域)/i.test(
+    /(?:failed to fetch|networkerror|network request failed|cors|access-control-allow-origin|err_connection|econnrefused|econnreset|enotfound|etimedout|ehostunreach|load failed|fetch failed|socket disconnected|tls connection|tls\s*握手|代理连接|网络中断|网络连接|跨域)/i.test(
       text
     )
   ) {
+    const isTlsOrProxy = /(?:socket disconnected|tls connection|tls\s*握手|代理连接|econnreset)/i.test(
+      text
+    );
     const cleanBase = normalizeNewApiBaseUrl(baseUrl || "");
-    const advice = cleanBase
-      ? `无法连通站点 ${cleanBase}，可能是浏览器跨域 (CORS) 拦截或网络中断。可将本工作台同源部署于中转站域名下，或改用桌面端客户端（免跨域直连）。`
-      : "请求被浏览器跨域 (CORS) 拦截或网络连接中断。请检查站点地址与网络状态，建议同源部署或使用桌面端客户端。";
+    const advice = isTlsOrProxy
+      ? "连接中转站时的网络或 TLS 握手被意外中断（通常由网络代理节点瞬断引起），请稍等后重试或检查本机网络/代理状态。"
+      : cleanBase
+        ? `无法连通站点 ${cleanBase}，可能是浏览器跨域 (CORS) 拦截或网络中断。可将本工作台同源部署于中转站域名下，或改用桌面端客户端（免跨域直连）。`
+        : "请求被浏览器跨域 (CORS) 拦截或网络连接中断。请检查站点地址与网络状态，建议同源部署或使用桌面端客户端。";
     return {
       code: "cors_network",
-      title: "网络连接中断或跨域受限",
+      title: isTlsOrProxy ? "网络或 TLS 握手连接中断" : "网络连接中断或跨域受限",
       advice,
       retryable: true,
       suggestOpenSettings: true,

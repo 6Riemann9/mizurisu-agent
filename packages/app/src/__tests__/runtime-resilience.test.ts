@@ -91,6 +91,19 @@ describe("客户级运行时韧性、错误诊断与模型智能分类", () => {
     const corsNoBase = classifyApiError("NetworkError when attempting to fetch resource");
     expect(corsNoBase.code).toBe("cors_network");
 
+    const tlsDisconnect = classifyApiError(
+      "Client network socket disconnected before secure TLS connection was established"
+    );
+    expect(tlsDisconnect.code).toBe("cors_network");
+    expect(tlsDisconnect.title).toContain("TLS");
+    expect(tlsDisconnect.retryable).toBe(true);
+
+    const proxy502 = classifyApiError(
+      '拉取模型失败 (HTTP 502): {"error":{"message":"代理连接上游站点网络/TLS 握手失败"}}'
+    );
+    expect(proxy502.code).toBe("cors_network");
+    expect(proxy502.advice).toContain("网络或 TLS 握手");
+
     const server503 = classifyApiError("HTTP 503 Service Unavailable");
     expect(server503.code).toBe("server");
     expect(server503.retryable).toBe(true);
