@@ -1,6 +1,5 @@
 import {
   AlertCircle,
-  ArrowRight,
   ExternalLink,
   FileSpreadsheet,
   FileText,
@@ -15,7 +14,15 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ClipboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { BUILTIN_SKILLS } from "../../agent/skills";
 import {
   DEFAULT_BRAND_NAME,
@@ -23,7 +30,10 @@ import {
   getMizurisuConsoleLinks,
 } from "../../newapi/client";
 import { useAppStore } from "../../store/useAppStore";
-import { BrandLogo } from "../common/FileBadge";
+import type { SkillTemplate, WorkspaceFileMeta } from "../../types";
+import { BrandLogo, FileIcon, formatFileSize } from "../common/FileBadge";
+import { Button, Tooltip, cn } from "../ui";
+import { ComposerControls } from "./ComposerControls";
 import { MessageItem } from "./MessageItem";
 
 const QUICK_STARTERS = [
@@ -57,6 +67,45 @@ const QUICK_STARTERS = [
   },
 ];
 
+type ComposerPopoverTrigger =
+  | { kind: "file"; query: string; start: number; end: number; anchor: string }
+  | { kind: "skill"; query: string; start: number; end: number; anchor: string };
+
+/** 根据光标位置解析 @ 引用文件或 / 唤起技能的上下文触发器 */
+function detectComposerTrigger(
+  value: string,
+  cursor: number
+): ComposerPopoverTrigger | null {
+  const safeCursor = Math.max(0, Math.min(cursor, value.length));
+  const before = value.slice(0, safeCursor);
+
+  // 优先匹配光标前的 @查询片段（任意非空白非@字符）
+  const atMatch = before.match(/@([^\s@]*)$/);
+  if (atMatch && atMatch.index !== undefined) {
+    return {
+      kind: "file",
+      query: atMatch[1],
+      start: atMatch.index,
+      end: safeCursor,
+      anchor: `file:${atMatch.index}`,
+    };
+  }
+
+  // 当输入处于首词 /命令阶段（以 / 开头且无空白）时触发技能列表
+  const slashMatch = before.match(/^\/([^\s]*)$/);
+  if (slashMatch) {
+    return {
+      kind: "skill",
+      query: slashMatch[1],
+      start: 0,
+      end: safeCursor,
+      anchor: "skill:0",
+    };
+  }
+
+  return null;
+}
+
 export function ChatPane({
   draftExternal,
   onClearExternalDraft,
@@ -70,6 +119,7 @@ export function ChatPane({
     sessions,
     activeSessionId,
     isStreaming,
+    files,
     customSkills,
     activeSkillId,
     sendMessage,
@@ -82,6 +132,9 @@ export function ChatPane({
   } = useAppStore();
 
   const [input, setInput] = useState("");
+  const [cursorPos, setCursorPos] = useState(0);
+  const [dismissedAnchor, setDismissedAnchor] = useState<string | null>(null);
+  const [popoverIndex, setPopoverIndex] = useState(0);
   const [attachedPaths, setAttachedPaths] = useState<string[]>([]);
   const [attachedImages, setAttachedImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<Array<{ file: File; url: string }>>([]);
@@ -90,17 +143,52 @@ export function ChatPane({
 
   const feedRef = useRef<HTMLDivElement>(null);
   const attachRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const popoverListRef = useRef<HTMLDivElement>(null);
 
   const session = sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
-  const allSkills = [...BUILTIN_SKILLS, ...customSkills];
+  const allSkills = useMemo(
+    () => [...BUILTIN_SKILLS, ...customSkills],
+    [customSkills]
+  );
   const activeSkill = allSkills.find((s) => s.id === activeSkillId);
+
+  const focusTextareaAt = useCallback((pos?: number) => {
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      if (typeof pos === "number") {
+        const clamped = Math.max(0, Math.min(pos, el.value.length));
+        el.setSelectionRange(clamped, clamped);
+      }
+    });
+  }, []);
+
+  // 响应全局 `/` 聚焦工作区输入快捷键事件
+  useEffect(() => {
+    const onFocusComposer = () => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+      setCursorPos(end);
+    };
+    window.addEventListener("mizurisu:focus-composer", onFocusComposer);
+    return () => window.removeEventListener("mizurisu:focus-composer", onFocusComposer);
+  }, []);
 
   useEffect(() => {
     if (draftExternal) {
       setInput(draftExternal);
+      setCursorPos(draftExternal.length);
+      setDismissedAnchor(null);
       onClearExternalDraft?.();
+      focusTextareaAt(draftExternal.length);
     }
-  }, [draftExternal, onClearExternalDraft]);
+  }, [draftExternal, onClearExternalDraft, focusTextareaAt]);
 
   useEffect(() => {
     if (!feedRef.current) return;
@@ -129,9 +217,159 @@ export function ChatPane({
     };
   }, [attachedImages]);
 
+  // 解析当前光标所处的 @ / / 上下文浮层
+  const rawTrigger = useMemo(
+    () => detectComposerTrigger(input, cursorPos),
+    [input, cursorPos]
+  );
+
+  const activeTrigger =
+    rawTrigger && rawTrigger.anchor !== dismissedAnchor ? rawTrigger : null;
+
+  // 若光标离开已忽略的触发点，重置忽略状态以便下次继续触发
+  useEffect(() => {
+    if (dismissedAnchor && (!rawTrigger || rawTrigger.anchor !== dismissedAnchor)) {
+      setDismissedAnchor(null);
+    }
+  }, [rawTrigger, dismissedAnchor]);
+
+  // 根据浮层类型筛选工作区文件或办公技能
+  const filteredFiles = useMemo<WorkspaceFileMeta[]>(() => {
+    if (!activeTrigger || activeTrigger.kind !== "file") return [];
+    const q = activeTrigger.query.trim().toLowerCase();
+    if (!q) return files;
+    return files.filter(
+      (f) =>
+        f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q)
+    );
+  }, [activeTrigger, files]);
+
+  const filteredSkills = useMemo<SkillTemplate[]>(() => {
+    if (!activeTrigger || activeTrigger.kind !== "skill") return [];
+    const q = activeTrigger.query.trim().toLowerCase();
+    if (!q) return allSkills;
+    return allSkills.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        s.description.toLowerCase().includes(q) ||
+        s.id.toLowerCase().includes(q) ||
+        s.category.toLowerCase().includes(q)
+    );
+  }, [activeTrigger, allSkills]);
+
+  const popoverCount =
+    activeTrigger?.kind === "file"
+      ? filteredFiles.length
+      : activeTrigger?.kind === "skill"
+        ? filteredSkills.length
+        : 0;
+
+  const clampedPopoverIndex =
+    popoverCount === 0 ? 0 : Math.min(popoverIndex, popoverCount - 1);
+
+  // 键盘切换高亮项时自动滚动到可视区域内
+  useEffect(() => {
+    if (!activeTrigger || !popoverListRef.current) return;
+    const activeEl = popoverListRef.current.querySelector<HTMLElement>(
+      `[data-popover-idx="${clampedPopoverIndex}"]`
+    );
+    activeEl?.scrollIntoView({ block: "nearest" });
+  }, [activeTrigger, clampedPopoverIndex]);
+
+  // 点击输入工作台外部时收起 @ / / 浮层
+  useEffect(() => {
+    if (!activeTrigger) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (composerRef.current && !composerRef.current.contains(e.target as Node)) {
+        setDismissedAnchor(activeTrigger.anchor);
+      }
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [activeTrigger]);
+
   const canSend = Boolean(
     input.trim() || attachedImages.length > 0 || attachedPaths.length > 0
   );
+
+  const handleSelectFileItem = useCallback(
+    (file: WorkspaceFileMeta) => {
+      if (!activeTrigger || activeTrigger.kind !== "file") return;
+      setAttachedPaths((prev) =>
+        prev.includes(file.path) ? prev : [...prev, file.path]
+      );
+      const nextInput =
+        input.slice(0, activeTrigger.start) + input.slice(activeTrigger.end);
+      setInput(nextInput);
+      setCursorPos(activeTrigger.start);
+      setPopoverIndex(0);
+      setDismissedAnchor(null);
+      focusTextareaAt(activeTrigger.start);
+    },
+    [activeTrigger, input, focusTextareaAt]
+  );
+
+  const handleSelectSkillItem = useCallback(
+    (skill: SkillTemplate) => {
+      if (!activeTrigger || activeTrigger.kind !== "skill") return;
+      setActiveSkill(skill.id);
+      const tail = input.slice(activeTrigger.end);
+      const cleanedTail = activeTrigger.start === 0 ? tail.replace(/^\s+/, "") : tail;
+      const nextInput = input.slice(0, activeTrigger.start) + cleanedTail;
+      setInput(nextInput);
+      setCursorPos(activeTrigger.start);
+      setPopoverIndex(0);
+      setDismissedAnchor(null);
+      focusTextareaAt(activeTrigger.start);
+    },
+    [activeTrigger, input, setActiveSkill, focusTextareaAt]
+  );
+
+  const handleInsertAtTrigger = () => {
+    const el = textareaRef.current;
+    const start = el ? el.selectionStart : input.length;
+    const end = el ? el.selectionEnd : input.length;
+    setDismissedAnchor(null);
+    setPopoverIndex(0);
+
+    // 若光标前已是 @ 触发态，仅聚焦唤起列表而不重复插入
+    if (start === end && start > 0 && input[start - 1] === "@") {
+      setCursorPos(start);
+      focusTextareaAt(start);
+      return;
+    }
+
+    const nextInput = `${input.slice(0, start)}@${input.slice(end)}`;
+    const nextPos = start + 1;
+    setInput(nextInput);
+    setCursorPos(nextPos);
+    focusTextareaAt(nextPos);
+  };
+
+  const handleInsertSlashTrigger = () => {
+    setDismissedAnchor(null);
+    setPopoverIndex(0);
+
+    // 若当前已在首词 / 命令阶段，直接聚焦并将光标移至命令片段末尾
+    if (/^\/[^\s]*$/.test(input)) {
+      setCursorPos(input.length);
+      focusTextareaAt(input.length);
+      return;
+    }
+
+    if (input.startsWith("/")) {
+      const firstSpace = input.search(/\s/);
+      const endPos = firstSpace >= 0 ? firstSpace : input.length;
+      setCursorPos(endPos);
+      focusTextareaAt(endPos);
+      return;
+    }
+
+    const nextInput = `/${input}`;
+    setInput(nextInput);
+    setCursorPos(1);
+    focusTextareaAt(1);
+  };
 
   const handleSend = async (customText?: string) => {
     const text = (customText ?? input).trim();
@@ -140,7 +378,12 @@ export function ChatPane({
     if (!text && paths.length === 0 && imgs.length === 0) return;
 
     setErrorTip(null);
-    if (!customText) setInput("");
+    if (!customText) {
+      setInput("");
+      setCursorPos(0);
+      setDismissedAnchor(null);
+      setPopoverIndex(0);
+    }
     setAttachedPaths([]);
     setAttachedImages([]);
 
@@ -214,6 +457,59 @@ export function ChatPane({
     }
   };
 
+  const handleTextareaKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) {
+      return;
+    }
+
+    // 当 @ 文件或 / 技能浮层处于打开态时，优先接管导航与确认按键，绝不误发送消息
+    if (activeTrigger) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (popoverCount > 0) {
+          setPopoverIndex((clampedPopoverIndex + 1) % popoverCount);
+        }
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (popoverCount > 0) {
+          setPopoverIndex((clampedPopoverIndex - 1 + popoverCount) % popoverCount);
+        }
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        if (activeTrigger.kind === "file" && filteredFiles[clampedPopoverIndex]) {
+          handleSelectFileItem(filteredFiles[clampedPopoverIndex]);
+        } else if (
+          activeTrigger.kind === "skill" &&
+          filteredSkills[clampedPopoverIndex]
+        ) {
+          handleSelectSkillItem(filteredSkills[clampedPopoverIndex]);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setDismissedAnchor(activeTrigger.anchor);
+        return;
+      }
+    }
+
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (canSend) {
+        handleSend();
+      }
+    }
+  };
+
+  const syncCursorFromTarget = (el: HTMLTextAreaElement) => {
+    setCursorPos(el.selectionStart ?? el.value.length);
+  };
+
   const errorDiagnosis = errorTip ? classifyApiError(errorTip, config.baseUrl) : null;
   const consoleLinks = getMizurisuConsoleLinks(config.baseUrl);
 
@@ -234,12 +530,12 @@ export function ChatPane({
       }}
     >
       {dragging && (
-        <div className="absolute inset-3 z-30 rounded-lg border border-dashed border-[var(--accent)] bg-[var(--bg-surface)]/95 flex items-center justify-center text-[13px] font-medium text-[var(--text-primary)] pointer-events-none">
+        <div className="absolute inset-3 z-30 rounded-lg border border-dashed border-[var(--accent)] bg-[var(--bg-surface)]/95 flex items-center justify-center text-[13px] font-linear-medium text-[var(--text-primary)] pointer-events-none">
           松开即可导入文件到工作区并附带至对话
         </div>
       )}
 
-      {/* 未配置 Key 克制提示条 */}
+      {/* 未配置 Key 单行极薄离线提示条 */}
       {(!config.baseUrl || !config.apiKey) && (
         <div className="px-4 py-1.5 border-b border-[var(--border-hairline)] bg-[var(--bg-sidebar)] flex items-center justify-between gap-3 text-[12px] shrink-0">
           <div className="flex items-center gap-2 min-w-0 text-[var(--text-secondary)]">
@@ -248,79 +544,69 @@ export function ChatPane({
               当前处于离线文档体验模式，连接 Mizurisu / 模型中转服务或填入 API Key 后即可启用 AI 协同。
             </span>
           </div>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="xs"
             onClick={() => setSettingsOpen(true)}
-            className="shrink-0 whitespace-nowrap inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] text-[11px] font-medium text-[var(--text-primary)] transition cursor-pointer"
           >
             <Settings2 className="w-3 h-3 text-[var(--text-muted)]" />
             <span>配置连接</span>
-          </button>
+          </Button>
         </div>
       )}
 
-      {/* 对话消息流 */}
+      {/* 对话消息流 / 克制办公启动台 */}
       <div ref={feedRef} className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 sm:py-6 min-h-0">
         {!session || session.messages.length === 0 ? (
-          <div className="@container max-w-[760px] mx-auto pt-2 sm:pt-6 space-y-5">
+          <div className="@container max-w-[760px] mx-auto pt-4 sm:pt-8 space-y-6">
+            {/* 沉静工作台主标头（去堆叠边框盒） */}
             <div className="flex flex-col items-center text-center">
-              <BrandLogo className="w-11 h-11 rounded-xl mb-3" />
-              <h1 className="text-[16px] font-semibold tracking-tight text-[var(--text-primary)]">
-                {config.brandName || DEFAULT_BRAND_NAME} · 智能办公启动台
+              <BrandLogo className="w-8 h-8 rounded-lg mb-3" />
+              <h1 className="text-[16px] font-linear-semibold tracking-tight text-[var(--text-primary)]">
+                {config.brandName || DEFAULT_BRAND_NAME} · 智能办公工作台
               </h1>
-              <p className="mt-1.5 text-[13px] text-[var(--text-muted)] max-w-lg leading-relaxed text-balance">
+              <p className="mt-1.5 text-[13px] text-[var(--text-muted)] max-w-md leading-relaxed text-balance">
                 直接读写、清洗与生成 Excel / Word / PPT / PDF 文档，所有改动实时同步右侧工作台。
               </p>
               <div className="mt-4">
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() => attachRef.current?.click()}
-                  className="h-8 px-3.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] text-[12px] font-medium text-[var(--text-primary)] inline-flex items-center gap-2 transition cursor-pointer"
                 >
-                  <Upload className="w-3.5 h-3.5 text-[var(--accent)]" />
-                  <span>上传本地文档开始处理</span>
-                </button>
+                  <Upload className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+                  <span>上传本地文档</span>
+                </Button>
               </div>
             </div>
 
-            {/* 可关闭的首次使用三步轻量指引 */}
+            {/* 极轻单行三步流程提示（无重边框，可一键关闭） */}
             {!settings.onboardingDismissed && (
-              <div className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-3.5 py-2.5 flex items-center justify-between gap-3 text-[12px]">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[var(--text-secondary)] min-w-0">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-4 h-4 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] text-[10px] font-semibold inline-flex items-center justify-center">
-                      1
-                    </span>
-                    <span>上传文档</span>
-                  </span>
-                  <ArrowRight className="w-3 h-3 text-[var(--text-muted)] shrink-0" />
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-4 h-4 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] text-[10px] font-semibold inline-flex items-center justify-center">
-                      2
-                    </span>
-                    <span>选场景或提问</span>
-                  </span>
-                  <ArrowRight className="w-3 h-3 text-[var(--text-muted)] shrink-0" />
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-4 h-4 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] text-[10px] font-semibold inline-flex items-center justify-center">
-                      3
-                    </span>
-                    <span>右侧实时预览/导出</span>
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => dismissOnboarding()}
-                  aria-label="关闭使用指引"
-                  title="不再显示此指引"
-                  className="shrink-0 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
+              <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11.5px] text-[var(--text-muted)]">
+                <span className="tabular-nums">1. 上传文档</span>
+                <span aria-hidden="true" className="opacity-45">
+                  ·
+                </span>
+                <span className="tabular-nums">2. 选场景或用 @ / 提问</span>
+                <span aria-hidden="true" className="opacity-45">
+                  ·
+                </span>
+                <span className="tabular-nums">3. 右侧实时预览导出</span>
+                <Tooltip content="不再显示此指引" side="top">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => dismissOnboarding()}
+                    aria-label="关闭使用指引"
+                    className="size-5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    <X className="w-3 h-3" />
+                  </Button>
+                </Tooltip>
               </div>
             )}
 
-            {/* 2×2 极简 1px 线框高价值场景卡片（基于容器宽度自适应，避免三栏挤压截断标题） */}
+            {/* 2×2 克制高价值场景卡片（基于容器宽度自适应不截断） */}
             <div className="grid grid-cols-1 @[520px]:grid-cols-2 gap-2.5">
               {QUICK_STARTERS.map((item) => {
                 const Icon = item.icon;
@@ -329,11 +615,11 @@ export function ChatPane({
                     key={item.title}
                     type="button"
                     onClick={() => handleSend(item.prompt)}
-                    className="min-w-0 text-left p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] hover:bg-[var(--bg-surface)] hover:border-[var(--border-strong)] transition cursor-pointer group"
+                    className="min-w-0 text-left p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--surface-subtle)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] transition-[background-color,border-color] duration-150 cursor-pointer group linear-focus-ring"
                   >
-                    <div className="flex items-start gap-2 text-[13px] font-medium text-[var(--text-primary)]">
+                    <div className="flex items-start gap-2 text-[13px] font-linear-medium text-[var(--text-primary)]">
                       <Icon
-                        className="w-3.5 h-3.5 mt-0.5 text-[var(--text-muted)] group-hover:text-[var(--text-primary)] shrink-0 transition"
+                        className="w-3.5 h-3.5 mt-0.5 text-[var(--text-muted)] group-hover:text-[var(--text-primary)] shrink-0 transition-colors"
                         strokeWidth={1.6}
                       />
                       <span className="leading-snug line-clamp-2">{item.title}</span>
@@ -355,7 +641,7 @@ export function ChatPane({
         )}
       </div>
 
-      {/* 底部精致 1px 细边框输入器 */}
+      {/* 底部 Linear Composer 工作台 */}
       <div className="px-4 sm:px-6 pb-4 pt-1 shrink-0">
         <div className="max-w-[760px] mx-auto">
           {errorTip && errorDiagnosis && (
@@ -364,7 +650,7 @@ export function ChatPane({
                 <div className="flex items-start gap-2 min-w-0">
                   <AlertCircle className="w-3.5 h-3.5 text-[var(--status-danger)] shrink-0 mt-0.5" />
                   <div className="min-w-0 space-y-0.5">
-                    <div className="font-medium text-[var(--status-danger)]">
+                    <div className="font-linear-medium text-[var(--status-danger)]">
                       {errorDiagnosis.title}
                     </div>
                     <p className="text-[11.5px] text-[var(--text-secondary)] leading-relaxed">
@@ -372,29 +658,32 @@ export function ChatPane({
                     </p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setErrorTip(null)}
-                  aria-label="关闭错误提示"
-                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer shrink-0"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
+                <Tooltip content="关闭错误提示" side="top">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => setErrorTip(null)}
+                    aria-label="关闭错误提示"
+                    className="size-5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </Button>
+                </Tooltip>
               </div>
               <div className="flex flex-wrap items-center gap-2 pl-5 text-[11px]">
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  size="xs"
                   onClick={() => setSettingsOpen(true)}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] text-[var(--text-primary)] transition cursor-pointer"
                 >
                   <Settings2 className="w-3 h-3 text-[var(--text-muted)]" />
                   <span>打开设置</span>
-                </button>
+                </Button>
                 <a
                   href={consoleLinks.topupUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition"
+                  className="inline-flex items-center gap-1 h-6 px-2 rounded-[5px] border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] text-[11px] font-linear-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition linear-focus-ring"
                 >
                   <span>前往控制台</span>
                   <ExternalLink className="w-2.5 h-2.5" />
@@ -411,23 +700,26 @@ export function ChatPane({
                     <div
                       key={`${item.file.name}_${i}_${item.file.size}`}
                       className="relative group w-14 h-14 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden shrink-0"
-                      title={item.file.name}
                     >
-                      <img
-                        src={item.url}
-                        alt={item.file.name}
-                        className="w-full h-full object-cover"
-                      />
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setAttachedImages((prev) => prev.filter((_, idx) => idx !== i))
-                        }
-                        aria-label={`移除图片 ${item.file.name}`}
-                        className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/75 text-white flex items-center justify-center opacity-85 hover:opacity-100 transition cursor-pointer"
-                      >
-                        <X className="w-2.5 h-2.5" />
-                      </button>
+                      <Tooltip content={item.file.name} side="top">
+                        <img
+                          src={item.url}
+                          alt={item.file.name}
+                          className="w-full h-full object-cover"
+                        />
+                      </Tooltip>
+                      <Tooltip content={`移除图片 ${item.file.name}`} side="top">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setAttachedImages((prev) => prev.filter((_, idx) => idx !== i))
+                          }
+                          aria-label={`移除图片 ${item.file.name}`}
+                          className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/75 text-white flex items-center justify-center opacity-85 hover:opacity-100 transition cursor-pointer linear-focus-ring"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      </Tooltip>
                     </div>
                   ))}
                 </div>
@@ -438,14 +730,17 @@ export function ChatPane({
                   {activeSkill && (
                     <span className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-md border border-[var(--border-strong)] bg-[var(--accent-soft)] text-[var(--text-primary)]">
                       <Wand2 className="w-3 h-3 text-[var(--accent)]" />
-                      <span>{activeSkill.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => setActiveSkill(undefined)}
-                        className="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
+                      <span className="font-linear-medium">{activeSkill.name}</span>
+                      <Tooltip content="取消挂载技能" side="top">
+                        <button
+                          type="button"
+                          onClick={() => setActiveSkill(undefined)}
+                          aria-label={`取消挂载技能 ${activeSkill.name}`}
+                          className="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer linear-focus-ring rounded"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </Tooltip>
                     </span>
                   )}
                   {attachedPaths.map((p) => (
@@ -455,15 +750,18 @@ export function ChatPane({
                     >
                       <FileText className="w-3 h-3 text-[var(--text-muted)]" />
                       <span className="font-mono">{p}</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setAttachedPaths((prev) => prev.filter((x) => x !== p))
-                        }
-                        className="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
+                      <Tooltip content={`移除附件 ${p}`} side="top">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setAttachedPaths((prev) => prev.filter((x) => x !== p))
+                          }
+                          aria-label={`移除附件 ${p}`}
+                          className="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer linear-focus-ring rounded"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </Tooltip>
                     </span>
                   ))}
                 </div>
@@ -471,29 +769,190 @@ export function ChatPane({
             </div>
           )}
 
-          <div className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] focus-within:border-[var(--border-strong)] transition">
+          {/* Composer 输入框主体与上下文浮层宿主 */}
+          <div
+            ref={composerRef}
+            className="relative rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] focus-within:border-[var(--border-strong)] focus-within:shadow-[var(--ring-focus)] transition-[border-color,box-shadow] duration-150"
+          >
+            {/* @ 引用工作区文件 / / 唤起办公技能 上浮面板 */}
+            {activeTrigger && (
+              <div
+                role="listbox"
+                aria-label={
+                  activeTrigger.kind === "file"
+                    ? "引用工作区文件"
+                    : "选择办公技能"
+                }
+                className="absolute left-0 right-0 bottom-full mb-1.5 z-40 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] shadow-[var(--shadow-popover)] overflow-hidden"
+              >
+                <div className="px-2.5 py-1.5 border-b border-[var(--border-hairline)] bg-[var(--bg-sidebar)] flex items-center justify-between gap-2 text-[11px] text-[var(--text-muted)]">
+                  <span className="font-linear-medium text-[var(--text-secondary)]">
+                    {activeTrigger.kind === "file"
+                      ? "引用工作区文件"
+                      : "选择办公技能"}
+                  </span>
+                  <span className="hidden sm:inline tabular-nums">
+                    ↑↓ 选择 · Enter/Tab 确认 · Esc 关闭
+                  </span>
+                </div>
+
+                <div
+                  ref={popoverListRef}
+                  className="max-h-56 overflow-y-auto p-1 space-y-0.5"
+                >
+                  {activeTrigger.kind === "file" ? (
+                    filteredFiles.length === 0 ? (
+                      <div className="py-5 text-center text-[12px] text-[var(--text-muted)]">
+                        {files.length === 0
+                          ? "工作区暂无文件，可拖拽或点击下方附件按钮上传"
+                          : "未匹配到符合条件的工作区文件"}
+                      </div>
+                    ) : (
+                      filteredFiles.map((file, idx) => {
+                        const selected = idx === clampedPopoverIndex;
+                        const attached = attachedPaths.includes(file.path);
+                        return (
+                          <button
+                            key={file.path}
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            data-popover-idx={idx}
+                            onMouseEnter={() => setPopoverIndex(idx)}
+                            onMouseDown={(e) => {
+                              // 阻止输入框失焦闪烁，直接完成选文件插入
+                              e.preventDefault();
+                              handleSelectFileItem(file);
+                            }}
+                            className={cn(
+                              "w-full h-7 px-2 rounded-md flex items-center justify-between gap-2 text-left text-[12px] transition-colors cursor-pointer",
+                              selected
+                                ? "bg-[var(--bg-active)] text-[var(--text-primary)]"
+                                : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                            )}
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <FileIcon
+                                category={file.category}
+                                className="w-3.5 h-3.5 shrink-0"
+                              />
+                              <span className="font-mono truncate font-linear-medium text-[var(--text-primary)]">
+                                {file.name}
+                              </span>
+                              {file.path !== file.name && (
+                                <span className="font-mono text-[10.5px] text-[var(--text-muted)] truncate">
+                                  {file.path}
+                                </span>
+                              )}
+                            </span>
+                            <span className="flex items-center gap-1.5 shrink-0">
+                              {attached && (
+                                <span className="text-[10px] px-1.5 py-px rounded border border-[var(--border-hairline)] bg-[var(--bg-elevated)] text-[var(--text-muted)]">
+                                  已附加
+                                </span>
+                              )}
+                              <span className="font-mono tabular-nums text-[11px] text-[var(--text-muted)]">
+                                {formatFileSize(file.size)}
+                              </span>
+                            </span>
+                          </button>
+                        );
+                      })
+                    )
+                  ) : filteredSkills.length === 0 ? (
+                    <div className="py-5 text-center text-[12px] text-[var(--text-muted)]">
+                      未匹配到办公技能，按 Esc 关闭后可直接输入提问
+                    </div>
+                  ) : (
+                    filteredSkills.map((skill, idx) => {
+                      const selected = idx === clampedPopoverIndex;
+                      const mounted = skill.id === activeSkillId;
+                      return (
+                        <button
+                          key={skill.id}
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          data-popover-idx={idx}
+                          onMouseEnter={() => setPopoverIndex(idx)}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            handleSelectSkillItem(skill);
+                          }}
+                          className={cn(
+                            "w-full min-h-[28px] px-2 py-1 rounded-md flex items-center justify-between gap-2 text-left text-[12px] transition-colors cursor-pointer",
+                            selected
+                              ? "bg-[var(--bg-active)] text-[var(--text-primary)]"
+                              : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                          )}
+                        >
+                          <span className="flex items-center gap-2 min-w-0 flex-1">
+                            <Wand2
+                              className={cn(
+                                "w-3.5 h-3.5 shrink-0",
+                                selected || mounted
+                                  ? "text-[var(--accent)]"
+                                  : "text-[var(--text-muted)]"
+                              )}
+                            />
+                            <span className="font-linear-medium text-[var(--text-primary)] shrink-0">
+                              {skill.name}
+                            </span>
+                            <span className="text-[11px] text-[var(--text-muted)] truncate">
+                              {skill.description}
+                            </span>
+                          </span>
+                          {mounted && (
+                            <span className="text-[10px] px-1.5 py-px rounded border border-[var(--accent)]/35 bg-[var(--accent-soft)] text-[var(--accent)] shrink-0">
+                              已挂载
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+
             <textarea
+              ref={textareaRef}
               rows={2}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onPaste={handlePaste}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  if (canSend) {
-                    handleSend();
-                  }
+              onChange={(e) => {
+                setInput(e.target.value);
+                setPopoverIndex(0);
+                syncCursorFromTarget(e.currentTarget);
+              }}
+              onClick={(e) => syncCursorFromTarget(e.currentTarget)}
+              onKeyUp={(e) => {
+                if (
+                  e.key === "ArrowLeft" ||
+                  e.key === "ArrowRight" ||
+                  e.key === "Home" ||
+                  e.key === "End"
+                ) {
+                  syncCursorFromTarget(e.currentTarget);
                 }
               }}
+              onSelect={(e) => syncCursorFromTarget(e.currentTarget)}
+              onPaste={handlePaste}
+              onKeyDown={handleTextareaKeyDown}
               placeholder={
                 isStreaming
                   ? "Agent 执行中：输入内容按 Enter 可随时插话引导 (Steer)..."
-                  : "输入指令处理工作区文档，Shift + Enter 换行，支持拖拽文件或粘贴截图..."
+                  : "输入指令处理文档，输入 @ 引用文件或 / 唤起办公技能，Shift + Enter 换行..."
               }
               className="w-full resize-none bg-transparent px-3.5 pt-3 pb-2 text-[13.5px] leading-relaxed text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none max-h-44"
             />
-            <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-1 border-t border-[var(--border-hairline)]/60">
-              <div className="flex items-center gap-2 min-w-0">
+
+            {/* 底部控制栏：左侧模型/思考微胶囊 + 附件/@// 按钮，右侧停止与发送 */}
+            <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-1.5 border-t border-[var(--border-hairline)]/60 flex-wrap sm:flex-nowrap">
+              <div className="flex items-center gap-1 min-w-0">
+                <ComposerControls />
+
+                <span className="h-3.5 w-px bg-[var(--border-hairline)] mx-0.5 hidden sm:block shrink-0" />
+
                 <input
                   ref={attachRef}
                   type="file"
@@ -507,40 +966,80 @@ export function ChatPane({
                   }}
                   className="hidden"
                 />
-                <button
-                  type="button"
-                  onClick={() => attachRef.current?.click()}
-                  className="h-7 px-2 rounded-md inline-flex items-center gap-1.5 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition cursor-pointer whitespace-nowrap shrink-0"
-                  title="附加 Word / Excel / PPT / PDF / 图片"
-                >
-                  <Paperclip className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
-                  <span className="hidden sm:inline">附加文件</span>
-                </button>
-                <span className="hidden md:inline font-mono text-[11px] text-[var(--text-muted)] truncate">
-                  {config.selectedModelId}
-                </span>
+
+                <Tooltip content="附加 Word / Excel / PPT / PDF / 图片" side="top">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => attachRef.current?.click()}
+                    aria-label="附加工作区文档或图片"
+                    className="h-6 px-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  >
+                    <Paperclip className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
+                    <span className="hidden lg:inline">附件</span>
+                  </Button>
+                </Tooltip>
+
+                <Tooltip content="引用工作区文件" shortcut="@" side="top">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={handleInsertAtTrigger}
+                    aria-label="插入 @ 引用工作区文件"
+                    className="h-6 min-w-6 px-1.5 rounded-md font-mono text-[12px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  >
+                    @
+                  </Button>
+                </Tooltip>
+
+                <Tooltip content="唤起办公技能" shortcut="/" side="top">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={handleInsertSlashTrigger}
+                    aria-label="填入 / 唤起办公技能"
+                    className="h-6 min-w-6 px-1.5 rounded-md font-mono text-[12px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  >
+                    /
+                  </Button>
+                </Tooltip>
               </div>
 
-              <div className="flex items-center gap-1.5 shrink-0">
+              <div className="flex items-center gap-1.5 shrink-0 ml-auto">
                 {isStreaming && (
-                  <button
-                    type="button"
-                    onClick={() => abortRun()}
-                    className="h-7 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:bg-[var(--bg-active)] text-[var(--status-danger)] inline-flex items-center gap-1.5 text-[12px] font-medium transition cursor-pointer whitespace-nowrap shrink-0"
-                  >
-                    <Square className="w-3 h-3 fill-current" />
-                    <span>停止</span>
-                  </button>
+                  <Tooltip content="立即中止当前生成" side="top">
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => abortRun()}
+                    >
+                      <Square className="w-3 h-3 fill-current" />
+                      <span>停止</span>
+                    </Button>
+                  </Tooltip>
                 )}
-                <button
-                  type="button"
-                  onClick={() => handleSend()}
-                  disabled={!canSend}
-                  className="h-7 px-3 rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-35 text-white inline-flex items-center gap-1.5 text-[12px] font-medium transition cursor-pointer whitespace-nowrap shrink-0"
+
+                <Tooltip
+                  content={isStreaming ? "发送插话引导" : "发送指令"}
+                  shortcut="Enter"
+                  side="top"
                 >
-                  <Send className="w-3 h-3" />
-                  <span>{isStreaming ? "插话引导" : "发送"}</span>
-                </button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => handleSend()}
+                    disabled={!canSend}
+                  >
+                    <Send className="w-3 h-3" />
+                    <span>{isStreaming ? "插话引导" : "发送"}</span>
+                    <span
+                      aria-hidden="true"
+                      className="hidden sm:inline text-[10px] font-mono opacity-65 leading-none"
+                    >
+                      ↵
+                    </span>
+                  </Button>
+                </Tooltip>
               </div>
             </div>
           </div>

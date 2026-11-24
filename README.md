@@ -12,9 +12,11 @@
 - **零后端纯本机运行与安全防线**：
   - 对话历史、工作区文件、自定义 Skill 与凭据均保存在本地设备（IndexedDB / 本地磁盘），不经由任何第三方服务器；
   - **安全加固**：HTML 幻灯片与自定义 CSS 全链路 XSS 消毒（拦截危险标签、事件属性、协议与表达式注入，完整保留矢量 SVG 与 Bento 布局）；Web Worker 数据沙箱阻断外部网络请求与模块逃逸；整库备份默认开启安全脱敏（不含明文 API Key）；桌面端 Shell 工具配备 60 秒超时强杀、256KB 输出截断及严格路径穿越校验。
-- **Linear 风格客户工作台与高效交互**：
-  - 深/浅双主题自适应、44px 极简顶栏、可折叠侧栏（支持工作区文件搜索、防误删二次确认、行内重命名与会话重命名）、可拖拽分屏预览面板（配备面板级错误边界兜底）与 `Cmd/Ctrl + K` 命令面板；
-  - 支持 `Ctrl+V` 直接粘贴剪贴板图片、纯图片/纯附件发送、消息「编辑重发」与「重新生成」、代码块一键复制及客户首次使用三步引导；支持自定义全局办公指令（System Prompt 补充）以适配企业固定输出口径。
+- **Linear 风格客户工作台与键盘优先交互**：
+  - **OKLCH 感知色板与高对比度模式**：内置 Dark / Light 双主题与一键切换的高对比度模式（`.high-contrast`），离线加载 `@fontsource-variable/inter` 与 `@fontsource-variable/jetbrains-mono` 配合 OpenType 排印特性（`cv01`/`ss03`/`cv02`/`cv11`）及精密中间字重（510 / 590）；
+  - **静谧面包屑顶栏与克制侧栏**：44px 极简面包屑顶栏、可折叠侧栏（紧凑 28px 行高、工作区文件搜索、行内重命名、会话重命名与默认折叠低频技能抽屉）及可拖拽/全屏 Office 分屏工作台（配备面板级错误边界兜底）；
+  - **底部集成模型中心的 Composer**：将模型搜索切换与 Thinking 强度下沉至输入底栏，支持 `@` 实时引用工作区文件与 `/` 唤起内置及自定义办公技能，`Ctrl+V` 直接粘贴剪贴板图片、纯图片/纯附件发送、消息「编辑重发」与「重新生成」、代码块一键复制及客户首次使用三步引导；支持自定义全局办公指令（System Prompt 补充）以适配企业固定输出口径；
+  - **两级命令面板、键盘优先流与可逆删除**：支持两级 `Cmd/Ctrl + K` 命令面板（工作区文件支持 `→` 进入预览/导出/转换/删除二级子菜单），提供 `[`（侧栏）、`]`（文档台）、`\`（全屏文档）、`C`（新会话）、`/`（聚焦输入）、`?`（快捷键速查）单键工作流与 `Mod + ,` 设置快捷键（自动避让 Word `.ProseMirror` 与 Excel `.univer-host-container` 编辑态焦点），并为删除会话与工作区文件提供 **6 秒「撤销」Toast** 安全反馈。
 - **高可靠性 Agent 内核**：
   - 支持多轮工具调用文本与 Token 用量精准累加、上下文预算自动裁剪、工具审批中止防死锁、流式中断、运行中 `steer` 插话纠偏与会话分支回溯。
 - **原生级 Office 套件与一键交付流（纯 JS 零 Python/Office 依赖）**：
@@ -32,13 +34,19 @@
 
 ```text
 mizurisu-agent/
+├── docs/
+│   └── DESIGN_SYSTEM.md   # 设计系统单一事实源（OKLCH 令牌、UI 原语铁律、快捷键与无障碍门槛）
 ├── packages/
-│   └── app/         # 核心应用（React 19 + Pi SDK + Office 引擎 + 三端 UI，可直接构建为 Web/PWA）
+│   └── app/               # 核心应用（React 19 + Pi SDK + Office 引擎 + 三端 UI，可直接构建为 Web/PWA）
 ├── apps/
-│   ├── desktop/     # Tauri v2 桌面壳（Windows / macOS / Linux）
-│   └── mobile/      # Capacitor 8 移动壳（Android / iOS）
+│   ├── desktop/           # Tauri v2 桌面壳（Windows / macOS / Linux）
+│   └── mobile/            # Capacitor 8 移动壳（Android / iOS）
 └── .github/workflows/
 ```
+
+## 设计体系与 UI 规范
+
+项目采用沉淀于 [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md) 的工程化 Linear 设计系统作为单一事实源，涵盖 OKLCH 三态对比度色板（Dark / Light / High Contrast）、`Inter Variable` 与 `JetBrains Mono Variable` 离线排印、`packages/app/src/components/ui` 强制复用原语（`Button`、`Tooltip`、`Kbd`、`Dialog`、`cn`）、键盘优先焦点避让机制以及可逆删除/无障碍量化门槛。
 
 ## 快速开始
 
@@ -71,7 +79,7 @@ pnpm dev
 # 类型检查
 pnpm typecheck
 
-# 运行单元测试（New-API 鉴权与诊断 / 安全沙箱 / 运行时恢复 / Office 与 PDF 升级 / Slides 校验 / Agent 工具）
+# 运行单元测试（New-API 鉴权与诊断 / 安全沙箱 / 运行时恢复 / Office 与 PDF 升级 / Slides 校验 / Linear UI 与可逆交互 / Agent 工具）
 pnpm test
 
 # 构建生产 Web 静态包（产物位于 packages/app/dist）

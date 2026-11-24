@@ -3,29 +3,52 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Linear Dark-First Design System */
+/* Linear OKLCH Dark-First Design System */
 :root,
 .dark {
   color-scheme: dark;
-  --bg-canvas: #08090a;
-  --bg-sidebar: #0e0f12;
-  --bg-surface: #131417;
-  --bg-elevated: #1a1b20;
+  --bg-canvas: oklch(0.14 0.006 264);
+  --bg-sidebar: oklch(0.165 0.007 264);
+  --bg-surface: oklch(0.188 0.008 264);
+  --bg-elevated: oklch(0.218 0.009 264);
+  --surface-subtle: rgba(255, 255, 255, 0.025);
   --bg-hover: rgba(255, 255, 255, 0.05);
-  --bg-active: rgba(255, 255, 255, 0.085);
+  --bg-active: rgba(255, 255, 255, 0.088);
   --border-hairline: rgba(255, 255, 255, 0.075);
-  --border-strong: rgba(255, 255, 255, 0.14);
-  --text-primary: #f7f8f8;
-  --text-secondary: #9a9fa8;
-  --text-muted: #62666f;
-  --accent: #5e6ad2;
-  --accent-hover: #6c79e0;
-  --accent-soft: rgba(94, 106, 210, 0.14);
-  --surface-paper: #0c0d10;
+  --border-strong: rgba(255, 255, 255, 0.15);
 
-  --status-success: #46a758;
-  --status-warning: #e5a000;
-  --status-danger: #e5484d;
+  --text-primary: oklch(0.975 0.003 264);
+  --text-heading-sub: oklch(0.88 0.012 258);
+  --text-secondary: oklch(0.72 0.012 260);
+  --text-muted: oklch(0.56 0.012 260);
+  --text-dim: oklch(0.47 0.01 260);
+
+  --accent: oklch(0.565 0.165 272);
+  --accent-hover: oklch(0.62 0.165 272);
+  --accent-soft: color-mix(in oklch, var(--accent) 16%, transparent);
+
+  /* Linear 克制主 CTA：近白衬底配近黑文字与多层微阴影 */
+  --btn-primary-bg: oklch(0.928 0.004 264);
+  --btn-primary-hover: oklch(0.975 0.003 264);
+  --btn-primary-text: oklch(0.14 0.006 264);
+  --btn-primary-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.25),
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+
+  --surface-paper: oklch(0.155 0.007 264);
+
+  --status-success: oklch(0.67 0.15 152);
+  --status-warning: oklch(0.76 0.16 78);
+  --status-danger: oklch(0.63 0.19 24);
+
+  --shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.48), 0 0 0 1px var(--border-hairline);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.62), 0 0 0 1px var(--border-strong);
+  --ring-focus: 0 0 0 2px color-mix(in oklch, var(--accent) 48%, transparent);
+
+  --ease-linear: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur-base: 160ms;
 
   /* 过渡期兼容别名 */
   --bg-app: var(--bg-canvas);
@@ -35,33 +58,86 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+.dark.high-contrast {
+  --bg-canvas: oklch(0.105 0.004 264);
+  --bg-sidebar: oklch(0.145 0.006 264);
+  --bg-surface: oklch(0.175 0.008 264);
+  --bg-elevated: oklch(0.22 0.01 264);
+  --surface-subtle: rgba(255, 255, 255, 0.045);
+  --bg-hover: rgba(255, 255, 255, 0.09);
+  --bg-active: rgba(255, 255, 255, 0.15);
+  --border-hairline: rgba(255, 255, 255, 0.16);
+  --border-strong: rgba(255, 255, 255, 0.28);
+  --text-primary: oklch(0.992 0.002 264);
+  --text-heading-sub: oklch(0.94 0.008 258);
+  --text-secondary: oklch(0.84 0.01 260);
+  --text-muted: oklch(0.7 0.012 260);
+  --text-dim: oklch(0.62 0.01 260);
+  --accent: oklch(0.635 0.185 272);
+  --accent-hover: oklch(0.685 0.185 272);
+}
+
 .light {
   color-scheme: light;
-  --bg-canvas: #ffffff;
-  --bg-sidebar: #f7f8f9;
-  --bg-surface: #ffffff;
-  --bg-elevated: #f3f4f6;
-  --bg-hover: rgba(0, 0, 0, 0.04);
+  --bg-canvas: oklch(0.995 0.002 264);
+  --bg-sidebar: oklch(0.974 0.004 264);
+  --bg-surface: oklch(1 0 0);
+  --bg-elevated: oklch(0.952 0.005 264);
+  --surface-subtle: rgba(0, 0, 0, 0.02);
+  --bg-hover: rgba(0, 0, 0, 0.042);
   --bg-active: rgba(0, 0, 0, 0.075);
-  --border-hairline: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.15);
-  --text-primary: #111214;
-  --text-secondary: #5c6068;
-  --text-muted: #8a8f98;
-  --accent: #5e6ad2;
-  --accent-hover: #4e5bc4;
-  --accent-soft: rgba(94, 106, 210, 0.1);
-  --surface-paper: #f5f6f8;
+  --border-hairline: rgba(0, 0, 0, 0.085);
+  --border-strong: rgba(0, 0, 0, 0.17);
 
-  --status-success: #2b9a66;
-  --status-warning: #cc8400;
-  --status-danger: #dc3e42;
+  --text-primary: oklch(0.18 0.008 264);
+  --text-heading-sub: oklch(0.28 0.012 262);
+  --text-secondary: oklch(0.46 0.014 260);
+  --text-muted: oklch(0.56 0.014 260);
+  --text-dim: oklch(0.64 0.01 260);
+
+  --accent: oklch(0.535 0.17 272);
+  --accent-hover: oklch(0.475 0.175 272);
+  --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+
+  --btn-primary-bg: oklch(0.19 0.01 264);
+  --btn-primary-hover: oklch(0.26 0.012 264);
+  --btn-primary-text: oklch(0.985 0.002 264);
+  --btn-primary-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(15, 23, 42, 0.12);
+
+  --surface-paper: oklch(0.968 0.004 264);
+
+  --status-success: oklch(0.54 0.15 152);
+  --status-warning: oklch(0.64 0.16 74);
+  --status-danger: oklch(0.56 0.19 24);
+
+  --shadow-popover: 0 12px 32px rgba(15, 23, 42, 0.12), 0 0 0 1px var(--border-hairline);
+  --shadow-modal: 0 24px 60px rgba(15, 23, 42, 0.18), 0 0 0 1px var(--border-strong);
 
   /* 过渡期兼容别名 */
   --bg-app: var(--bg-canvas);
   --bg-panel: var(--bg-surface);
   --bg-subtle: var(--bg-sidebar);
   --border-subtle: var(--border-hairline);
+}
+
+.light.high-contrast {
+  --bg-canvas: oklch(1 0 0);
+  --bg-sidebar: oklch(0.962 0.005 264);
+  --bg-elevated: oklch(0.935 0.006 264);
+  --surface-subtle: rgba(0, 0, 0, 0.038);
+  --bg-hover: rgba(0, 0, 0, 0.075);
+  --bg-active: rgba(0, 0, 0, 0.12);
+  --border-hairline: rgba(0, 0, 0, 0.18);
+  --border-strong: rgba(0, 0, 0, 0.34);
+  --text-primary: oklch(0.12 0.006 264);
+  --text-heading-sub: oklch(0.2 0.01 262);
+  --text-secondary: oklch(0.32 0.012 260);
+  --text-muted: oklch(0.42 0.012 260);
+  --text-dim: oklch(0.48 0.01 260);
+  --accent: oklch(0.46 0.195 272);
+  --accent-hover: oklch(0.41 0.195 272);
 }
 
 html,
@@ -71,10 +147,18 @@ body,
   margin: 0;
   background-color: var(--bg-canvas);
   color: var(--text-primary);
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-family: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-feature-settings: "cv01", "ss03", "cv02", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Linear 精密中间字重与等宽数字 */
+.font-linear-medium {
+  font-weight: 510;
+}
+.font-linear-semibold {
+  font-weight: 590;
 }
 
 .tabular-nums {
@@ -82,7 +166,23 @@ body,
 }
 
 .font-mono {
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.linear-focus-ring:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* 极简 Linear 滚动条 */
@@ -117,15 +217,15 @@ body,
 .prose-chat h1,
 .prose-chat h2,
 .prose-chat h3 {
-  font-weight: 600;
-  letter-spacing: -0.015em;
+  font-weight: 590;
+  letter-spacing: -0.018em;
   margin-top: 1.25em;
   margin-bottom: 0.45em;
   color: var(--text-primary);
 }
-.prose-chat h1 { font-size: 1.2rem; }
-.prose-chat h2 { font-size: 1.05rem; }
-.prose-chat h3 { font-size: 0.9375rem; }
+.prose-chat h1 { font-size: 1.18rem; }
+.prose-chat h2 { font-size: 1.03rem; }
+.prose-chat h3 { font-size: 0.9375rem; color: var(--text-heading-sub); }
 .prose-chat p {
   margin: 0.55em 0;
   color: var(--text-primary);
@@ -146,10 +246,11 @@ body,
 .prose-chat code:not(pre code) {
   background-color: var(--bg-elevated);
   border: 1px solid var(--border-hairline);
-  padding: 0.12em 0.38em;
-  border-radius: 0.3rem;
+  padding: 0.1em 0.36em;
+  border-radius: 0.25rem;
   font-size: 0.82em;
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: -0.012em;
+  font-family: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .prose-chat pre {
   margin: 0.75em 0;
@@ -183,7 +284,7 @@ body,
 .prose-chat th {
   background-color: var(--bg-sidebar);
   color: var(--text-secondary);
-  font-weight: 500;
+  font-weight: 510;
 }
 .prose-chat blockquote {
   border-left: 2px solid var(--accent);

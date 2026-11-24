@@ -28,6 +28,7 @@ import remarkGfm from "remark-gfm";
 import { classifyApiError, getMizurisuConsoleLinks } from "../../newapi/client";
 import { useAppStore } from "../../store/useAppStore";
 import type { ToolCallRecord, UiMessage } from "../../types";
+import { Button, Tooltip, cn } from "../ui";
 
 /** 递归提取 React 节点中的纯文本，兼容 rehype-highlight 拆分后的代码高亮树 */
 function extractTextFromReactNode(node: ReactNode): string {
@@ -41,6 +42,31 @@ function extractTextFromReactNode(node: ReactNode): string {
     return extractTextFromReactNode(node.props.children);
   }
   return "";
+}
+
+/** 提取工具调用中关键目标文件或路径摘要，用于单行时间线高密度展示 */
+function getToolTargetLabel(tool: ToolCallRecord): string | null {
+  const args = tool.args || {};
+  const singleKeys = ["path", "outputPath", "sourcePath", "dataPath"] as const;
+  for (const key of singleKeys) {
+    const val = args[key];
+    if (typeof val === "string" && val.trim()) {
+      return val.trim();
+    }
+  }
+  if (tool.modifiedPath && tool.modifiedPath.trim()) {
+    return tool.modifiedPath.trim();
+  }
+  const listKeys = ["dataPaths", "paths"] as const;
+  for (const key of listKeys) {
+    const val = args[key];
+    if (Array.isArray(val)) {
+      const items = val.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+      if (items.length === 1) return items[0];
+      if (items.length > 1) return `${items[0]} 等 ${items.length} 项`;
+    }
+  }
+  return null;
 }
 
 /** Markdown 代码块包装器：右上角提供一键复制代码按钮 */
@@ -74,24 +100,26 @@ function MarkdownPreBlock({
 
   return (
     <div className="relative group/code my-3">
-      <button
-        type="button"
-        onClick={handleCopyCode}
-        className="absolute top-2 right-2 z-10 inline-flex items-center gap-1 px-2 py-1 rounded border border-white/10 bg-black/60 hover:bg-black/80 text-[11px] text-zinc-300 hover:text-white opacity-90 sm:opacity-0 sm:group-hover/code:opacity-100 focus:opacity-100 transition cursor-pointer backdrop-blur-sm"
-        title="复制代码"
-      >
-        {codeCopied ? (
-          <>
-            <Check className="w-3 h-3 text-[var(--status-success)]" />
-            <span>已复制</span>
-          </>
-        ) : (
-          <>
-            <Copy className="w-3 h-3" />
-            <span>复制代码</span>
-          </>
-        )}
-      </button>
+      <Tooltip content={codeCopied ? "已复制代码" : "复制代码"} side="top">
+        <button
+          type="button"
+          onClick={handleCopyCode}
+          aria-label="复制代码"
+          className="absolute top-2 right-2 z-10 inline-flex items-center gap-1 px-2 py-1 rounded border border-white/10 bg-black/60 hover:bg-black/80 text-[11px] text-zinc-300 hover:text-white opacity-90 sm:opacity-0 sm:group-hover/code:opacity-100 focus:opacity-100 transition cursor-pointer backdrop-blur-sm linear-focus-ring"
+        >
+          {codeCopied ? (
+            <>
+              <Check className="w-3 h-3 text-[var(--status-success)]" />
+              <span>已复制</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-3 h-3" />
+              <span>复制代码</span>
+            </>
+          )}
+        </button>
+      </Tooltip>
       <pre {...props} className={`${className ?? ""} !my-0 pr-20`}>
         {children}
       </pre>
@@ -99,8 +127,16 @@ function MarkdownPreBlock({
   );
 }
 
-/** Linear Activity Timeline 单行状态轨 */
-function ToolCallItem({ tool }: { tool: ToolCallRecord }) {
+/** Linear Activity Timeline 单步工具执行节点（左侧 1px 竖线串起，状态圆点居线居中，单行 26px 高密度排版） */
+function ToolCallItem({
+  tool,
+  isFirst,
+  isLast,
+}: {
+  tool: ToolCallRecord;
+  isFirst: boolean;
+  isLast: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const { openPreview } = useAppStore();
 
@@ -109,75 +145,113 @@ function ToolCallItem({ tool }: { tool: ToolCallRecord }) {
       ? "bg-[var(--accent)] animate-pulse"
       : tool.status === "success"
         ? "bg-[var(--status-success)]"
-        : "bg-[var(--status-danger)]";
+        : tool.status === "blocked"
+          ? "bg-[var(--status-warning)]"
+          : "bg-[var(--status-danger)]";
+
+  const targetLabel = getToolTargetLabel(tool);
 
   return (
-    <div className="text-[12px]">
-      <div
-        onClick={() => setExpanded((v) => !v)}
-        className="min-h-[28px] px-2 py-1 rounded-md hover:bg-[var(--bg-hover)] flex items-center justify-between gap-2 cursor-pointer transition"
-      >
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
-          <span className="font-mono text-[12px] text-[var(--text-primary)] truncate">
-            {tool.name}
-          </span>
-          {typeof tool.args?.path === "string" && (
-            <span className="font-mono text-[11px] text-[var(--text-muted)] truncate">
-              {tool.args.path}
-            </span>
+    <div className="relative flex items-stretch text-[12px]">
+      {/* 左侧 1px 时间线轨道与居中状态圆点 */}
+      <div className="relative w-5 shrink-0 flex justify-center" aria-hidden="true">
+        {!isFirst && (
+          <span className="absolute top-0 h-[13px] left-1/2 -translate-x-1/2 w-px bg-[var(--border-hairline)]" />
+        )}
+        {(!isLast || expanded) && (
+          <span className="absolute top-[13px] bottom-0 left-1/2 -translate-x-1/2 w-px bg-[var(--border-hairline)]" />
+        )}
+        <span
+          className={cn(
+            "relative z-10 mt-[9.5px] w-[7px] h-[7px] rounded-full shrink-0 ring-2 ring-[var(--bg-canvas)]",
+            dotColor
           )}
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          {tool.modifiedPath && tool.status === "success" && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                openPreview(tool.modifiedPath!);
-              }}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:border-[var(--accent)] text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition cursor-pointer"
-            >
-              <FileOutput className="w-3 h-3 text-[var(--accent)]" />
-              <span>预览文档</span>
-            </button>
-          )}
-          {tool.durationMs !== undefined && (
-            <span className="font-mono tabular-nums text-[11px] text-[var(--text-muted)]">
-              {tool.durationMs}ms
-            </span>
-          )}
-          {expanded ? (
-            <ChevronDown className="w-3 h-3 text-[var(--text-muted)]" />
-          ) : (
-            <ChevronRight className="w-3 h-3 text-[var(--text-muted)]" />
-          )}
-        </div>
+        />
       </div>
 
-      {expanded && (
-        <div className="ml-2.5 pl-3 my-1 border-l border-[var(--border-hairline)] space-y-2">
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1">
-              入参
-            </div>
-            <pre className="p-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[11px] font-mono text-[var(--text-secondary)] overflow-x-auto max-h-40">
-              {JSON.stringify(tool.args, null, 2)}
-            </pre>
+      {/* 右侧 26px 单行高密度信息与可展开详情 */}
+      <div className="flex-1 min-w-0">
+        <div className="h-[26px] px-1.5 rounded-[5px] hover:bg-[var(--bg-hover)] flex items-center justify-between gap-2 transition-colors">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            className="flex-1 min-w-0 h-full flex items-center gap-2 text-left cursor-pointer linear-focus-ring rounded-[4px]"
+          >
+            <span className="font-mono text-[11.5px] font-linear-medium text-[var(--text-primary)] truncate shrink-0 max-w-[165px]">
+              {tool.name}
+            </span>
+            {targetLabel && (
+              <span className="font-mono text-[11px] text-[var(--text-muted)] truncate">
+                {targetLabel}
+              </span>
+            )}
+          </button>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            {tool.modifiedPath && tool.status === "success" && (
+              <Tooltip content={`在右侧工作台预览 ${tool.modifiedPath}`} side="top">
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openPreview(tool.modifiedPath!);
+                  }}
+                  className="h-5 px-1.5 rounded-[4px] text-[10.5px]"
+                >
+                  <FileOutput className="w-3 h-3 text-[var(--accent)]" />
+                  <span>预览文档</span>
+                </Button>
+              </Tooltip>
+            )}
+
+            {tool.durationMs !== undefined && (
+              <span className="font-mono tabular-nums text-[10.5px] text-[var(--text-muted)]">
+                {tool.durationMs}ms
+              </span>
+            )}
+
+            <Tooltip content={expanded ? "收起参数与返回" : "展开入参与出参"} side="top">
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                aria-label={expanded ? "收起工具调用详情" : "展开工具调用详情"}
+                className="w-4 h-4 rounded inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer linear-focus-ring"
+              >
+                {expanded ? (
+                  <ChevronDown className="w-3 h-3" />
+                ) : (
+                  <ChevronRight className="w-3 h-3" />
+                )}
+              </button>
+            </Tooltip>
           </div>
-          {tool.resultText && (
+        </div>
+
+        {expanded && (
+          <div className="pl-1.5 pr-1 pt-1 pb-2 space-y-2">
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1">
-                出参
+              <div className="text-[10px] font-linear-medium uppercase tracking-wider text-[var(--text-muted)] mb-1">
+                入参
               </div>
-              <pre className="p-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[11px] font-mono text-[var(--text-secondary)] overflow-x-auto max-h-48 whitespace-pre-wrap">
-                {tool.resultText.slice(0, 2500)}
+              <pre className="p-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[11px] font-mono text-[var(--text-secondary)] overflow-x-auto max-h-40">
+                {JSON.stringify(tool.args, null, 2)}
               </pre>
             </div>
-          )}
-        </div>
-      )}
+            {tool.resultText && (
+              <div>
+                <div className="text-[10px] font-linear-medium uppercase tracking-wider text-[var(--text-muted)] mb-1">
+                  出参
+                </div>
+                <pre className="p-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[11px] font-mono text-[var(--text-secondary)] overflow-x-auto max-h-48 whitespace-pre-wrap">
+                  {tool.resultText.slice(0, 2500)}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -234,7 +308,9 @@ export function MessageItem({ message }: { message: UiMessage }) {
 
   const handleSaveEdit = async () => {
     const trimmed = editDraft.trim();
-    if (!trimmed) return;
+    const hasMediaOrAttachment =
+      Boolean(message.attachments?.length) || Boolean(message.images?.length);
+    if (!trimmed && !hasMediaOrAttachment) return;
     setEditing(false);
     try {
       await editAndResendMessage(message.id, trimmed);
@@ -251,14 +327,26 @@ export function MessageItem({ message }: { message: UiMessage }) {
     }
   };
 
+  const handleBranch = () => {
+    branchFromMessage(message.id).catch((err) => {
+      pushToast(err instanceof Error ? err.message : String(err), "error");
+    });
+  };
+
   /* 用户消息：克制微浮卡片 (--bg-surface + 1px hairline) */
   if (message.role === "user") {
+    const canSaveEdit = Boolean(
+      editDraft.trim() ||
+        (message.attachments && message.attachments.length > 0) ||
+        (message.images && message.images.length > 0)
+    );
+
     return (
       <>
         <div className="flex justify-end group">
           <div className="max-w-[88%] sm:max-w-[78%] space-y-1.5 w-full flex flex-col items-end">
             {editing ? (
-              <div className="w-full rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] p-2.5 space-y-2">
+              <div className="w-full rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] p-2.5 space-y-2 shadow-[var(--shadow-popover)]">
                 <textarea
                   rows={3}
                   autoFocus
@@ -276,48 +364,57 @@ export function MessageItem({ message }: { message: UiMessage }) {
                   className="w-full resize-y bg-[var(--bg-canvas)] rounded-md border border-[var(--border-hairline)] focus:border-[var(--border-strong)] px-2.5 py-2 text-[13px] leading-relaxed text-[var(--text-primary)] outline-none max-h-60"
                 />
                 <div className="flex items-center justify-end gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditing(false);
-                      setEditDraft(message.content);
-                    }}
-                    className="h-7 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] hover:bg-[var(--bg-hover)] text-[11.5px] text-[var(--text-secondary)] transition cursor-pointer"
+                  <Tooltip content="放弃修改" shortcut="Escape" side="top">
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      onClick={() => {
+                        setEditing(false);
+                        setEditDraft(message.content);
+                      }}
+                    >
+                      取消
+                    </Button>
+                  </Tooltip>
+                  <Tooltip
+                    content="保存修改并重新发送"
+                    shortcut={["Mod", "Enter"]}
+                    side="top"
                   >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!editDraft.trim()}
-                    onClick={handleSaveEdit}
-                    className="h-7 px-2.5 rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white text-[11.5px] font-medium transition cursor-pointer"
-                  >
-                    保存并重发
-                  </button>
+                    <Button
+                      variant="primary"
+                      size="xs"
+                      disabled={!canSaveEdit}
+                      onClick={handleSaveEdit}
+                    >
+                      保存并重发
+                    </Button>
+                  </Tooltip>
                 </div>
               </div>
-            ) : (
+            ) : message.content ? (
               <div className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-3.5 py-2.5 text-[13.5px] leading-relaxed text-[var(--text-primary)] whitespace-pre-wrap">
                 {message.content}
               </div>
-            )}
+            ) : null}
 
             {message.images && message.images.length > 0 && (
               <div className="flex flex-wrap justify-end gap-1.5">
                 {message.images.map((img, idx) => (
-                  <button
-                    key={`${img.name}_${idx}`}
-                    type="button"
-                    onClick={() => setLightboxImage(img)}
-                    title={`点击放大查看 ${img.name}`}
-                    className="group/img relative w-16 h-16 rounded-md overflow-hidden border border-[var(--border-hairline)] hover:border-[var(--border-strong)] bg-[var(--bg-surface)] transition cursor-pointer"
-                  >
-                    <img
-                      src={img.dataUrl}
-                      alt={img.name}
-                      className="w-full h-full object-cover group-hover/img:scale-105 transition-transform"
-                    />
-                  </button>
+                  <Tooltip key={`${img.name}_${idx}`} content={`放大查看 ${img.name}`} side="top">
+                    <button
+                      type="button"
+                      onClick={() => setLightboxImage(img)}
+                      aria-label={`放大查看图片 ${img.name}`}
+                      className="group/img relative w-16 h-16 rounded-md overflow-hidden border border-[var(--border-hairline)] hover:border-[var(--border-strong)] bg-[var(--bg-surface)] transition cursor-pointer linear-focus-ring"
+                    >
+                      <img
+                        src={img.dataUrl}
+                        alt={img.name}
+                        className="w-full h-full object-cover group-hover/img:scale-105 transition-transform"
+                      />
+                    </button>
+                  </Tooltip>
                 ))}
               </div>
             )}
@@ -325,52 +422,57 @@ export function MessageItem({ message }: { message: UiMessage }) {
             {message.attachments && message.attachments.length > 0 && (
               <div className="flex flex-wrap justify-end gap-1.5">
                 {message.attachments.map((att) => (
-                  <button
+                  <Tooltip
                     key={att.path}
-                    type="button"
-                    onClick={() => openPreview(att.path)}
-                    className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md bg-[var(--bg-surface)] border border-[var(--border-hairline)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] transition cursor-pointer"
+                    content={`在右侧文档台预览 ${att.name}`}
+                    side="top"
                   >
-                    <Paperclip className="w-3 h-3 text-[var(--text-muted)]" />
-                    <span className="font-mono">{att.name}</span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => openPreview(att.path)}
+                      className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md bg-[var(--bg-surface)] border border-[var(--border-hairline)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] transition cursor-pointer linear-focus-ring"
+                    >
+                      <Paperclip className="w-3 h-3 text-[var(--text-muted)]" />
+                      <span className="font-mono">{att.name}</span>
+                    </button>
+                  </Tooltip>
                 ))}
               </div>
             )}
 
             {!isStreaming && !editing && (
-              <div className="flex justify-end items-center gap-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditDraft(message.content);
-                    setEditing(true);
-                  }}
-                  className="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                  title="修改内容并重新发送"
-                >
-                  <Pencil className="w-3 h-3" />
-                  <span>编辑重发</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    branchFromMessage(message.id).catch((err) => {
-                      pushToast(err instanceof Error ? err.message : String(err), "error");
-                    });
-                  }}
-                  className="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                  title="从这条消息新建分支重试"
-                >
-                  <GitBranch className="w-3 h-3" />
-                  <span>从此处分支重跑</span>
-                </button>
+              <div className="flex justify-end items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 transition">
+                <Tooltip content="修改内容并重新发送" side="top">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => {
+                      setEditDraft(message.content);
+                      setEditing(true);
+                    }}
+                    className="h-6 px-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    <span>编辑重发</span>
+                  </Button>
+                </Tooltip>
+                <Tooltip content="从这条消息新建分支重试" side="top">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={handleBranch}
+                    className="h-6 px-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    <GitBranch className="w-3 h-3" />
+                    <span>从此处分支重跑</span>
+                  </Button>
+                </Tooltip>
               </div>
             )}
           </div>
         </div>
 
-        {/* 图片轻量放大弹窗 */}
+        {/* 图片轻量放大灯箱 */}
         {lightboxImage && (
           <div
             className="fixed inset-0 z-[80] bg-black/80 backdrop-blur-[2px] flex flex-col items-center justify-center p-4"
@@ -379,14 +481,16 @@ export function MessageItem({ message }: { message: UiMessage }) {
             aria-modal="true"
             aria-label={lightboxImage.name}
           >
-            <button
-              type="button"
-              onClick={() => setLightboxImage(null)}
-              aria-label="关闭大图预览"
-              className="absolute top-4 right-4 w-8 h-8 rounded-full border border-white/15 bg-black/60 hover:bg-black/80 text-white inline-flex items-center justify-center transition cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <Tooltip content="关闭大图预览" shortcut="Escape" side="left">
+              <button
+                type="button"
+                onClick={() => setLightboxImage(null)}
+                aria-label="关闭大图预览"
+                className="absolute top-4 right-4 w-8 h-8 rounded-full border border-white/15 bg-black/60 hover:bg-black/80 text-white inline-flex items-center justify-center transition cursor-pointer linear-focus-ring"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </Tooltip>
             <img
               src={lightboxImage.dataUrl}
               alt={lightboxImage.name}
@@ -413,22 +517,25 @@ export function MessageItem({ message }: { message: UiMessage }) {
       {/* 思考过程折叠 */}
       {message.thinking && (
         <div className="border-l-2 border-[var(--border-strong)] pl-3 py-0.5">
-          <button
-            type="button"
-            onClick={() => setThinkingOpen((v) => !v)}
-            className="flex items-center gap-1.5 text-[12px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition cursor-pointer"
-          >
-            <Brain className="w-3.5 h-3.5 shrink-0" />
-            <span>思考过程</span>
-            {message.isStreaming && !message.content && (
-              <span className="animate-pulse">· 推理中</span>
-            )}
-            {thinkingOpen ? (
-              <ChevronDown className="w-3 h-3" />
-            ) : (
-              <ChevronRight className="w-3 h-3" />
-            )}
-          </button>
+          <Tooltip content={thinkingOpen ? "收起思考过程" : "展开思考过程"} side="top">
+            <button
+              type="button"
+              onClick={() => setThinkingOpen((v) => !v)}
+              aria-expanded={thinkingOpen}
+              className="flex items-center gap-1.5 text-[12px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition cursor-pointer linear-focus-ring rounded"
+            >
+              <Brain className="w-3.5 h-3.5 shrink-0" />
+              <span className="font-linear-medium">思考过程</span>
+              {message.isStreaming && !message.content && (
+                <span className="animate-pulse">· 推理中</span>
+              )}
+              {thinkingOpen ? (
+                <ChevronDown className="w-3 h-3" />
+              ) : (
+                <ChevronRight className="w-3 h-3" />
+              )}
+            </button>
+          </Tooltip>
           {thinkingOpen && (
             <div className="mt-1.5 text-[12px] text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed">
               {message.thinking}
@@ -439,9 +546,14 @@ export function MessageItem({ message }: { message: UiMessage }) {
 
       {/* Linear Activity Timeline 工具执行状态轨 */}
       {message.toolCalls && message.toolCalls.length > 0 && (
-        <div className="border-l border-[var(--border-hairline)] pl-1.5 space-y-0.5">
-          {message.toolCalls.map((tool) => (
-            <ToolCallItem key={tool.id} tool={tool} />
+        <div className="space-y-0 py-0.5" role="list" aria-label="工具执行时间线">
+          {message.toolCalls.map((tool, index) => (
+            <ToolCallItem
+              key={tool.id}
+              tool={tool}
+              isFirst={index === 0}
+              isLast={index === message.toolCalls!.length - 1}
+            />
           ))}
         </div>
       )}
@@ -479,35 +591,54 @@ export function MessageItem({ message }: { message: UiMessage }) {
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-3 shrink-0">
-                <button
-                  type="button"
-                  disabled={isStreaming}
-                  onClick={handleRegenerate}
-                  className="inline-flex items-center gap-1 hover:text-[var(--text-primary)] disabled:opacity-40 transition cursor-pointer"
-                  title="基于上一条提问重新生成回答"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>重新生成</span>
-                </button>
-                {message.content && (
-                  <button
-                    type="button"
-                    onClick={handleCopy}
-                    className="inline-flex items-center gap-1 hover:text-[var(--text-primary)] transition cursor-pointer"
+              <div className="flex items-center gap-1 shrink-0">
+                <Tooltip content="从当前位置新建分支会话" side="top">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    disabled={isStreaming}
+                    onClick={handleBranch}
+                    className="h-6 px-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                   >
-                    {copied ? (
-                      <>
-                        <Check className="w-3 h-3 text-[var(--status-success)]" />
-                        <span>已复制</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3 h-3" />
-                        <span>复制</span>
-                      </>
-                    )}
-                  </button>
+                    <GitBranch className="w-3 h-3" />
+                    <span>分支对话</span>
+                  </Button>
+                </Tooltip>
+
+                <Tooltip content="基于上一条提问重新生成回答" side="top">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    disabled={isStreaming}
+                    onClick={handleRegenerate}
+                    className="h-6 px-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>重新生成</span>
+                  </Button>
+                </Tooltip>
+
+                {message.content && (
+                  <Tooltip content={copied ? "已复制全部回复" : "复制助手回复内容"} side="top">
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={handleCopy}
+                      className="h-6 px-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                    >
+                      {copied ? (
+                        <>
+                          <Check className="w-3 h-3 text-[var(--status-success)]" />
+                          <span>已复制</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" />
+                          <span>复制</span>
+                        </>
+                      )}
+                    </Button>
+                  </Tooltip>
                 )}
               </div>
             </div>
@@ -520,7 +651,7 @@ export function MessageItem({ message }: { message: UiMessage }) {
           <div className="flex items-start gap-2">
             <AlertCircle className="w-3.5 h-3.5 text-[var(--status-danger)] shrink-0 mt-0.5" />
             <div className="min-w-0 space-y-0.5">
-              <div className="font-medium text-[var(--status-danger)]">
+              <div className="font-linear-medium text-[var(--status-danger)]">
                 {errorDiagnosis.title}
               </div>
               <p className="text-[11.5px] text-[var(--text-secondary)] leading-relaxed">
@@ -530,35 +661,41 @@ export function MessageItem({ message }: { message: UiMessage }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 pl-5 text-[11px]">
-            <button
-              type="button"
-              disabled={isStreaming}
-              onClick={handleRegenerate}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] text-[var(--text-primary)] disabled:opacity-40 transition cursor-pointer"
-            >
-              <RotateCcw className="w-3 h-3 text-[var(--accent)]" />
-              <span>重试生成</span>
-            </button>
-            {errorDiagnosis.suggestOpenSettings && (
-              <button
-                type="button"
-                onClick={() => setSettingsOpen(true)}
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition cursor-pointer"
+            <Tooltip content="重新发起当前回合生成" side="top">
+              <Button
+                variant="secondary"
+                size="xs"
+                disabled={isStreaming}
+                onClick={handleRegenerate}
               >
-                <Settings className="w-3 h-3 text-[var(--text-muted)]" />
-                <span>打开设置</span>
-              </button>
+                <RotateCcw className="w-3 h-3 text-[var(--accent)]" />
+                <span>重试生成</span>
+              </Button>
+            </Tooltip>
+            {errorDiagnosis.suggestOpenSettings && (
+              <Tooltip content="打开中转站、模型与密钥设置" side="top">
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  <Settings className="w-3 h-3 text-[var(--text-muted)]" />
+                  <span>打开设置</span>
+                </Button>
+              </Tooltip>
             )}
             {errorDiagnosis.suggestBillingConsole && (
-              <a
-                href={consoleLinks.topupUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition"
-              >
-                <span>前往控制台充值</span>
-                <ExternalLink className="w-2.5 h-2.5" />
-              </a>
+              <Tooltip content="前往 Mizurisu 控制台充值或检查令牌" side="top">
+                <a
+                  href={consoleLinks.topupUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 h-6 px-2 rounded-[5px] border border-[var(--border-hairline)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] text-[11px] font-linear-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition linear-focus-ring"
+                >
+                  <span>前往控制台充值</span>
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              </Tooltip>
             )}
           </div>
 

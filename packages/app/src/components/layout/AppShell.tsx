@@ -1,13 +1,16 @@
 import { FileText, FolderKanban, MessageSquare, Settings } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useGlobalShortcuts } from "../../hooks/useGlobalShortcuts";
 import { kvGet, kvSet } from "../../storage/db";
 import { useAppStore } from "../../store/useAppStore";
 import { LoginView } from "../auth/LoginView";
 import { ApprovalDialog } from "../chat/ApprovalDialog";
 import { ChatPane } from "../chat/ChatPane";
 import { CommandPalette } from "../command/CommandPalette";
+import { ShortcutHelpModal } from "../command/ShortcutHelpModal";
 import { PreviewPane } from "../preview/PreviewPane";
 import { SettingsContent, SettingsModal } from "../settings/SettingsModal";
+import { Tooltip, cn } from "../ui";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 
@@ -50,11 +53,22 @@ export function AppShell() {
     settings,
     previewOpen,
     previewExpanded,
+    activePreviewPath,
+    settingsOpen,
+    commandPaletteOpen,
+    shortcutHelpOpen,
+    pendingApproval,
     mobileTab,
     setMobileTab,
     statusBanner,
     files,
     updateSettings,
+    setPreviewOpen,
+    setPreviewExpanded,
+    openPreview,
+    createSession,
+    setShortcutHelpOpen,
+    setSettingsOpen,
   } = useAppStore();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -64,6 +78,71 @@ export function AppShell() {
   const [viewportWidth, setViewportWidth] = useState<number>(() =>
     typeof window !== "undefined" ? window.innerWidth : 1280
   );
+
+  // 切换左侧栏；若当前处于文档台全屏展开态，则同步退出全屏并显现侧栏
+  const handleToggleSidebar = useCallback(() => {
+    if (previewExpanded) {
+      setPreviewExpanded(false);
+      setSidebarOpen(true);
+      return;
+    }
+    setSidebarOpen((v) => !v);
+  }, [previewExpanded, setPreviewExpanded]);
+
+  // 注册 Linear 风格工作台全局单键快捷键与 Mod+, 设置入口
+  useGlobalShortcuts({
+    modalOpen:
+      !authSession ||
+      settingsOpen ||
+      commandPaletteOpen ||
+      shortcutHelpOpen ||
+      Boolean(pendingApproval),
+    onToggleSidebar: handleToggleSidebar,
+    onTogglePreview: () => {
+      if (!previewOpen && !activePreviewPath && files.length > 0) {
+        openPreview(files[0].path);
+        return;
+      }
+      setPreviewOpen(!previewOpen);
+    },
+    onToggleExpandPreview: () => {
+      if (!previewOpen) {
+        const targetPath = activePreviewPath || files[0]?.path;
+        if (targetPath) {
+          openPreview(targetPath);
+          setPreviewExpanded(true);
+          return;
+        }
+      }
+      setPreviewExpanded(!previewExpanded);
+    },
+    onNewSession: () => {
+      createSession()
+        .then(() =>
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("mizurisu:focus-composer"));
+          }, 30)
+        )
+        .catch(() => undefined);
+    },
+    onFocusComposer: () => {
+      if (mobileTab !== "chat") {
+        setMobileTab("chat");
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("mizurisu:focus-composer"));
+        }, 0);
+        return;
+      }
+      window.dispatchEvent(new CustomEvent("mizurisu:focus-composer"));
+    },
+    onToggleShortcutHelp: () => {
+      setShortcutHelpOpen(!shortcutHelpOpen);
+    },
+    onOpenSettings: () => {
+      if (!authSession) return;
+      setSettingsOpen(true);
+    },
+  });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -158,10 +237,10 @@ export function AppShell() {
   );
 
   return (
-    <div className="h-full w-full min-w-0 flex flex-col overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)]">
+    <div className="h-dvh w-full min-w-0 flex flex-col overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)]">
       <TopBar
         sidebarOpen={sidebarOpen}
-        onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        onToggleSidebar={handleToggleSidebar}
       />
 
       {statusBanner && (
@@ -173,7 +252,7 @@ export function AppShell() {
 
       {/* 桌面三栏布局 */}
       <div className="hidden md:flex flex-1 min-w-0 min-h-0 overflow-hidden">
-        {sidebarOpen && !previewExpanded && (
+        {sidebarOpen && !(previewExpanded && previewOpen) && (
           <Sidebar
             className="w-[240px] shrink-0"
             onUseSkillPrompt={handleUseSkillPrompt}
@@ -194,14 +273,30 @@ export function AppShell() {
         {previewOpen && (
           <>
             {!previewExpanded && (
-              <div
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="调整预览栏宽度"
-                onMouseDown={startResize}
-                className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-[var(--accent)]/60 active:bg-[var(--accent)] transition-colors z-10"
-                title="拖拽调整预览栏宽度"
-              />
+              <Tooltip
+                content="拖拽调整文档台宽度"
+                side="left"
+                disabled={draggingWidth !== null}
+              >
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="调整文档台宽度"
+                  onMouseDown={startResize}
+                  className="group relative w-1 -mx-[2px] shrink-0 cursor-col-resize bg-transparent z-10 select-none"
+                >
+                  {/* 极克制发丝分隔线：常态隐形复用文档台边框，仅在悬停或拖拽时显现细亮强调线 */}
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 transition-all duration-150",
+                      draggingWidth !== null
+                        ? "w-[2px] bg-[var(--accent)]"
+                        : "w-px bg-transparent group-hover:w-[2px] group-hover:bg-[var(--accent)]/75"
+                    )}
+                  />
+                </div>
+              </Tooltip>
             )}
             <section
               style={previewExpanded ? undefined : { width: effectivePreviewWidth }}
@@ -218,7 +313,7 @@ export function AppShell() {
       </div>
 
       {/* 移动端单栏 + 底部 4 Tab 极简导航 */}
-      <div className="flex md:hidden flex-1 flex-col min-w-0 min-h-0 overflow-hidden">
+      <div className="flex md:hidden flex-1 flex-col min-w-0 min-h-0 max-h-dvh overflow-hidden">
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           {mobileTab === "chat" && (
             <ChatPane
@@ -258,18 +353,20 @@ export function AppShell() {
                 key={id}
                 type="button"
                 onClick={() => setMobileTab(id)}
-                className={`min-w-0 px-1 flex flex-col items-center justify-center gap-0.5 transition cursor-pointer ${
+                className={cn(
+                  "min-w-0 px-1 flex flex-col items-center justify-center gap-0.5 transition cursor-pointer linear-focus-ring",
                   active
-                    ? "text-[var(--text-primary)] font-medium"
+                    ? "text-[var(--text-primary)] font-linear-medium"
                     : "text-[var(--text-muted)]"
-                }`}
+                )}
               >
                 <Icon
-                  className={`w-4 h-4 shrink-0 ${
+                  className={cn(
+                    "w-4 h-4 shrink-0",
                     active ? "text-[var(--accent)]" : "text-[var(--text-muted)]"
-                  }`}
+                  )}
                 />
-                <span className="truncate max-w-full">{label}</span>
+                <span className="truncate max-w-full tabular-nums">{label}</span>
               </button>
             );
           })}
@@ -279,6 +376,7 @@ export function AppShell() {
       <SettingsModal />
       <ApprovalDialog />
       <CommandPalette />
+      <ShortcutHelpModal />
     </div>
   );
 }

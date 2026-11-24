@@ -205,6 +205,8 @@ export interface SkillTemplate {
 
 export interface AppSettings {
   theme: "dark" | "light";
+  /** 是否开启基于 OKLCH 对比度增强的高对比度模式 */
+  highContrast?: boolean;
   autoApproveDelete: boolean;
   mountedNativeDir?: string;
   previewWidth: number;
@@ -218,11 +220,19 @@ export interface AppSettings {
   customSystemPrompt?: string;
 }
 
+/** 全局轻提示操作按钮（如撤销删除） */
+export interface ToastAction {
+  label: string;
+  onClick: () => void | Promise<void>;
+}
+
 /** 全局轻提示条目 */
 export interface ToastItem {
   id: string;
   level: "info" | "success" | "warning" | "error";
   message: string;
+  action?: ToastAction;
+  durationMs?: number;
 }
 
 /** API 错误分类枚举 */
