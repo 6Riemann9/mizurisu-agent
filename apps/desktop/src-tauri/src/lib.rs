@@ -217,6 +217,16 @@ fn execute_command_with_timeout(
             Ok(Some(exit_status)) => break exit_status,
             Ok(None) => {
                 if Instant::now() >= deadline {
+                    #[cfg(target_os = "windows")]
+                    {
+                        // 先尝试用 taskkill /F /T 终止子进程树，避免派生孙进程继续占用管道或后台残留
+                        let pid = child.id();
+                        let _ = Command::new("taskkill")
+                            .args(["/F", "/T", "/PID", &pid.to_string()])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .output();
+                    }
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!(

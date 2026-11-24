@@ -1,6 +1,11 @@
 import {
+  Archive,
   Check,
   Cpu,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FileDown,
   FileText,
   KeyRound,
   LogOut,
@@ -16,7 +21,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { BUILTIN_SKILLS } from "../../agent/skills";
 import { maskApiKey } from "../../newapi/auth";
-import { inferModelMetadata } from "../../newapi/client";
+import { getMizurisuConsoleLinks, inferModelMetadata } from "../../newapi/client";
 import { useAppStore } from "../../store/useAppStore";
 
 interface CommandItem {
@@ -38,6 +43,8 @@ export function CommandPalette() {
     settings,
     models,
     files,
+    sessions,
+    activeSessionId,
     customSkills,
     activeSkillId,
     authSession,
@@ -47,10 +54,14 @@ export function CommandPalette() {
     setSettingsOpen,
     setPreviewOpen,
     updateConfig,
+    updateSettings,
     openPreview,
     setActiveSkill,
     switchActiveToken,
     refreshAccountSession,
+    exportWorkspaceZip,
+    exportSessionMarkdown,
+    pushToast,
     logout,
   } = useAppStore();
 
@@ -86,12 +97,21 @@ export function CommandPalette() {
 
   const items = useMemo<CommandItem[]>(() => {
     const allSkills = [...BUILTIN_SKILLS, ...customSkills];
-    const modelList =
+    const rawModelList =
       models.length > 0
         ? models
         : config.selectedModelId
           ? [inferModelMetadata(config.selectedModelId, config)]
           : [];
+    const modelList = settings.showNonChatModels
+      ? rawModelList
+      : rawModelList.filter(
+          (m) => m.isChatCapable !== false || m.id === config.selectedModelId
+        );
+    const activeSession = sessions.find((s) => s.id === activeSessionId);
+    const consoleLinks = getMizurisuConsoleLinks(
+      authSession?.baseUrl || config.baseUrl
+    );
 
     const commands: CommandItem[] = [
       {
@@ -102,6 +122,74 @@ export function CommandPalette() {
         keywords: "new chat session 新建 会话 对话",
         icon: <MessageSquarePlus className="w-3.5 h-3.5" />,
         run: () => createSession(),
+      },
+      {
+        id: "action:export-workspace-zip",
+        group: "快捷操作",
+        label: "打包下载工作区 ZIP",
+        hint: files.length > 0 ? `共 ${files.length} 个文件` : "工作区暂无文件",
+        keywords: "zip export workspace archive download 打包 下载 工作区 导出",
+        icon: <Archive className="w-3.5 h-3.5" />,
+        run: () => exportWorkspaceZip(),
+      },
+      {
+        id: "action:export-session-markdown",
+        group: "快捷操作",
+        label: "导出当前会话为 Markdown",
+        hint: activeSession?.title || "归档当前对话记录",
+        keywords: "export markdown session chat 导出 会话 对话 记录",
+        icon: <FileDown className="w-3.5 h-3.5" />,
+        run: () => {
+          if (!activeSessionId) {
+            pushToast("当前没有可导出的会话", "warning");
+            return;
+          }
+          return exportSessionMarkdown(activeSessionId);
+        },
+      },
+      {
+        id: "action:toggle-non-chat-models",
+        group: "快捷操作",
+        label: settings.showNonChatModels
+          ? "隐藏非对话模型"
+          : "显示非对话模型（向量/语音/生图）",
+        hint: settings.showNonChatModels ? "当前显示全部" : "当前仅对话模型",
+        keywords: "model filter embedding tts image 隐藏 显示 非对话 模型",
+        icon: settings.showNonChatModels ? (
+          <EyeOff className="w-3.5 h-3.5" />
+        ) : (
+          <Eye className="w-3.5 h-3.5" />
+        ),
+        run: async () => {
+          const nextShow = !settings.showNonChatModels;
+          await updateSettings({ showNonChatModels: nextShow });
+          pushToast(
+            nextShow ? "已显示非对话模型" : "已隐藏非对话专用模型",
+            "info"
+          );
+        },
+      },
+      {
+        id: "action:open-console-topup",
+        group: "快捷操作",
+        label: "前往 Mizurisu 控制台充值 / 管理令牌",
+        hint: consoleLinks.topupUrl,
+        keywords: "console topup token billing mizurisu 控制台 充值 额度 令牌",
+        icon: <ExternalLink className="w-3.5 h-3.5" />,
+        run: () => {
+          window.open(consoleLinks.topupUrl, "_blank", "noopener,noreferrer");
+        },
+      },
+      {
+        id: "action:open-console-token",
+        group: "快捷操作",
+        label: "前往 Mizurisu 令牌管理页",
+        hint: consoleLinks.tokenUrl,
+        keywords: "console token key api mizurisu 令牌 管理 控制台",
+        icon: <KeyRound className="w-3.5 h-3.5" />,
+        run: () => {
+          window.open(consoleLinks.tokenUrl, "_blank", "noopener,noreferrer");
+        },
       },
       {
         id: "action:toggle-theme",
@@ -162,8 +250,8 @@ export function CommandPalette() {
         id: `model:${m.id}`,
         group: "切换模型",
         label: m.id,
-        hint: m.providerGroup,
-        keywords: `model 模型 ${m.id} ${m.providerGroup}`,
+        hint: m.tags && m.tags.length > 0 ? m.tags.join(" · ") : m.providerGroup,
+        keywords: `model 模型 ${m.id} ${m.providerGroup} ${(m.tags || []).join(" ")}`,
         active,
         icon: <Cpu className="w-3.5 h-3.5" />,
         run: () => updateConfig({ selectedModelId: m.id }),
@@ -217,16 +305,23 @@ export function CommandPalette() {
     models,
     config,
     files,
+    sessions,
+    activeSessionId,
     customSkills,
     activeSkillId,
     authSession,
     settings.theme,
+    settings.showNonChatModels,
     previewOpen,
     createSession,
     toggleTheme,
     setPreviewOpen,
     setSettingsOpen,
     refreshAccountSession,
+    exportWorkspaceZip,
+    exportSessionMarkdown,
+    updateSettings,
+    pushToast,
     logout,
     updateConfig,
     openPreview,
@@ -262,7 +357,10 @@ export function CommandPalette() {
     if (!item) return;
     setCommandPaletteOpen(false);
     Promise.resolve(item.run()).catch((err) => {
-      console.error("CommandPalette action failed:", err);
+      pushToast(
+        err instanceof Error ? err.message : String(err),
+        "error"
+      );
     });
   };
 

@@ -4,6 +4,24 @@ import { detectFileCategory, inspectExcel, readExcelSheet } from "../../office";
 import type { WorkspaceVFS } from "../../storage/workspace-vfs";
 
 const SANDBOX_NETWORK_ERROR_MSG = "安全沙箱禁止网络请求与外部脚本加载";
+const SANDBOX_ESCAPE_ERROR_MSG = "安全沙箱禁止动态导入或逃逸构造";
+
+/**
+ * 在执行前对用户分析脚本进行静态安全预检，阻断动态 import()、importScripts、eval、
+ * Function 构造函数及原型链 .constructor 逃逸构造，同时完整兼容正常数据结构与统计运算。
+ */
+export function assertSafeAnalysisCode(code: string): void {
+  if (/\bimportScripts\b/.test(code)) {
+    throw new Error(`${SANDBOX_NETWORK_ERROR_MSG}（禁止动态导入或逃逸构造）`);
+  }
+  // 兼容空白、/*...*/ 块注释及 //... 行注释隔断的 import(...) 与 import.meta 写法
+  if (/\bimport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*(?:\(|\.)/.test(code)) {
+    throw new Error(SANDBOX_ESCAPE_ERROR_MSG);
+  }
+  if (/\bFunction\b/.test(code) || /\beval\b/.test(code) || /\bconstructor\b/.test(code)) {
+    throw new Error(SANDBOX_ESCAPE_ERROR_MSG);
+  }
+}
 
 const sandboxParams = obj({
   code: str({
@@ -75,12 +93,15 @@ async function loadMultipleDatasetsForWorker(
 }
 
 /**
- * 构造无 Worker 降级分支使用的沙箱屏蔽代理与拦截函数，阻止脚本通过任何全局引用发起网络外泄。
+ * 构造无 Worker 降级分支使用的沙箱屏蔽代理与拦截函数，阻止脚本通过任何全局引用或框架别名发起网络外泄。
  */
 function createFallbackSandboxGuards() {
   // 使用普通 function（而非箭头函数），使直接调用与 new 构造均抛出统一安全错误
   const blockedNet = function blockedInSandbox(): never {
     throw new Error(SANDBOX_NETWORK_ERROR_MSG);
+  };
+  const blockedEscape = function blockedEscapeInSandbox(): never {
+    throw new Error(SANDBOX_ESCAPE_ERROR_MSG);
   };
 
   const safeNavigator =
@@ -102,8 +123,15 @@ function createFallbackSandboxGuards() {
     "WebSocket",
     "EventSource",
     "importScripts",
+    "WebTransport",
+    "Worker",
+    "SharedWorker",
+    "BroadcastChannel",
+    "URL",
+    "Blob",
   ]);
-  const selfAliases = new Set(["window", "self", "globalThis", "top", "parent"]);
+  const blockedEscapeProps = new Set(["Function", "eval"]);
+  const selfAliases = new Set(["window", "self", "globalThis", "top", "parent", "frames"]);
 
   const safeGlobal: Record<string, unknown> = new Proxy(
     globalThis as unknown as Record<string, unknown>,
@@ -111,6 +139,7 @@ function createFallbackSandboxGuards() {
       get(target, prop) {
         if (typeof prop === "string") {
           if (blockedGlobalProps.has(prop)) return blockedNet;
+          if (blockedEscapeProps.has(prop)) return blockedEscape;
           if (prop === "navigator") return safeNavigator;
           if (selfAliases.has(prop)) return safeGlobal;
           if (prop === "opener") return undefined;
@@ -120,84 +149,87 @@ function createFallbackSandboxGuards() {
     }
   );
 
-  return { blockedNet, safeNavigator, safeGlobal };
+  return { blockedNet, blockedEscape, safeNavigator, safeGlobal };
 }
 
-function executeInBlobWorker(
-  code: string,
-  data: unknown,
-  datasets: Record<string, unknown> | undefined,
-  timeoutMs = 8000
-): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    if (typeof Worker === "undefined" || typeof Blob === "undefined") {
-      // 无 Web Worker 环境（如单测）时受控降级执行，并通过 shadow 参数屏蔽外泄接口
-      try {
-        const { blockedNet, safeNavigator, safeGlobal } = createFallbackSandboxGuards();
-        const fn = new Function(
-          "data",
-          "datasets",
+/**
+ * 生成 Blob Web Worker 隔离执行引导代码：沿着 self 与 navigator 完整原型链向上锁定
+ * 所有网络外泄与跨线程构造接口直至 Object.prototype，确保 2 层以上原型（如 WorkerGlobalScope.prototype）不可绕过。
+ */
+export function createWorkerSandboxSource(): string {
+  return `
+      (function() {
+        var SandboxedFunction = Function;
+        var block = function blockedInSandbox() {
+          throw new Error(${JSON.stringify(SANDBOX_NETWORK_ERROR_MSG)});
+        };
+        var blockEscape = function blockedEscapeInSandbox() {
+          throw new Error(${JSON.stringify(SANDBOX_ESCAPE_ERROR_MSG)});
+        };
+        var blockedApis = [
           "fetch",
           "XMLHttpRequest",
           "WebSocket",
           "EventSource",
           "importScripts",
-          "navigator",
-          "window",
-          "self",
-          "globalThis",
-          `"use strict";\n${code}`
-        );
-        resolve(
-          fn(
-            data,
-            datasets,
-            blockedNet,
-            blockedNet,
-            blockedNet,
-            blockedNet,
-            blockedNet,
-            safeNavigator,
-            safeGlobal,
-            safeGlobal,
-            safeGlobal
-          )
-        );
-      } catch (err) {
-        reject(err);
-      }
-      return;
-    }
-
-    const workerSource = `
-      (function() {
-        var block = function blockedInSandbox() {
-          throw new Error(${JSON.stringify(SANDBOX_NETWORK_ERROR_MSG)});
-        };
-        var blockedApis = ["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "importScripts"];
-        for (var i = 0; i < blockedApis.length; i++) {
-          var apiName = blockedApis[i];
-          try {
-            Object.defineProperty(self, apiName, {
-              value: block,
-              writable: false,
-              configurable: false
-            });
-          } catch (_e1) {
+          "WebTransport",
+          "Worker",
+          "SharedWorker",
+          "BroadcastChannel",
+          "URL",
+          "Blob"
+        ];
+        var lockObjectProps = function(targetObj, names, replacement, onlyOwn) {
+          for (var i = 0; i < names.length; i++) {
+            var apiName = names[i];
+            if (onlyOwn && !Object.prototype.hasOwnProperty.call(targetObj, apiName)) {
+              continue;
+            }
             try {
-              self[apiName] = block;
-            } catch (_e2) {}
+              Object.defineProperty(targetObj, apiName, {
+                value: replacement,
+                writable: false,
+                configurable: false
+              });
+            } catch (_e1) {
+              try {
+                targetObj[apiName] = replacement;
+              } catch (_e2) {}
+            }
           }
+        };
+
+        var proto = self;
+        var depth = 0;
+        while (proto && proto !== Object.prototype && depth < 16) {
+          lockObjectProps(proto, blockedApis, block, proto !== self);
+          lockObjectProps(proto, ["Function", "eval"], blockEscape, proto !== self);
+          try {
+            proto = Object.getPrototypeOf(proto);
+          } catch (_e0) {
+            break;
+          }
+          depth += 1;
         }
+
         var safeNav = { sendBeacon: block };
         if (typeof self.navigator !== "undefined" && self.navigator) {
-          try {
-            Object.defineProperty(self.navigator, "sendBeacon", {
-              value: block,
-              writable: false,
-              configurable: false
-            });
-          } catch (_e3) {}
+          var navProto = self.navigator;
+          var navDepth = 0;
+          while (navProto && navProto !== Object.prototype && navDepth < 16) {
+            lockObjectProps(
+              navProto,
+              ["sendBeacon"],
+              block,
+              navProto !== self.navigator
+            );
+            try {
+              navProto = Object.getPrototypeOf(navProto);
+            } catch (_e3) {
+              break;
+            }
+            navDepth += 1;
+          }
           safeNav = new Proxy(self.navigator, {
             get: function(target, prop) {
               if (prop === "sendBeacon") return block;
@@ -209,7 +241,7 @@ function executeInBlobWorker(
         var postResult = self.postMessage.bind(self);
         self.onmessage = function(e) {
           try {
-            var fn = new Function(
+            var fn = new SandboxedFunction(
               "data",
               "datasets",
               "fetch",
@@ -217,7 +249,19 @@ function executeInBlobWorker(
               "WebSocket",
               "EventSource",
               "importScripts",
+              "WebTransport",
+              "Worker",
+              "SharedWorker",
+              "BroadcastChannel",
+              "URL",
+              "Blob",
+              "Function",
               "navigator",
+              "top",
+              "parent",
+              "frames",
+              "self",
+              "globalThis",
               '"use strict";\\n' + e.data.code
             );
             var result = fn(
@@ -228,7 +272,19 @@ function executeInBlobWorker(
               block,
               block,
               block,
-              safeNav
+              block,
+              block,
+              block,
+              block,
+              block,
+              block,
+              blockEscape,
+              safeNav,
+              self,
+              self,
+              self,
+              self,
+              self
             );
             postResult({ ok: true, result: result });
           } catch (err) {
@@ -237,6 +293,83 @@ function executeInBlobWorker(
         };
       })();
     `;
+}
+
+function executeInBlobWorker(
+  code: string,
+  data: unknown,
+  datasets: Record<string, unknown> | undefined,
+  timeoutMs = 8000
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    try {
+      assertSafeAnalysisCode(code);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    if (typeof Worker === "undefined" || typeof Blob === "undefined") {
+      // 无 Web Worker 环境（如单测）时受控降级执行，并通过 shadow 参数屏蔽外泄与框架全局对象
+      try {
+        const { blockedNet, blockedEscape, safeNavigator, safeGlobal } =
+          createFallbackSandboxGuards();
+        const fn = new Function(
+          "data",
+          "datasets",
+          "fetch",
+          "XMLHttpRequest",
+          "WebSocket",
+          "EventSource",
+          "importScripts",
+          "WebTransport",
+          "Worker",
+          "SharedWorker",
+          "BroadcastChannel",
+          "URL",
+          "Blob",
+          "Function",
+          "navigator",
+          "window",
+          "self",
+          "globalThis",
+          "top",
+          "parent",
+          "frames",
+          `"use strict";\n${code}`
+        );
+        resolve(
+          fn(
+            data,
+            datasets,
+            blockedNet,
+            blockedNet,
+            blockedNet,
+            blockedNet,
+            blockedNet,
+            blockedNet,
+            blockedNet,
+            blockedNet,
+            blockedNet,
+            blockedNet,
+            blockedNet,
+            blockedEscape,
+            safeNavigator,
+            safeGlobal,
+            safeGlobal,
+            safeGlobal,
+            safeGlobal,
+            safeGlobal,
+            safeGlobal
+          )
+        );
+      } catch (err) {
+        reject(err);
+      }
+      return;
+    }
+
+    const workerSource = createWorkerSandboxSource();
     const blob = new Blob([workerSource], { type: "application/javascript" });
     const url = URL.createObjectURL(blob);
     const worker = new Worker(url);

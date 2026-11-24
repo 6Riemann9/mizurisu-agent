@@ -19,6 +19,7 @@ import {
   exportHtmlSlidesToPptxBytes,
   getSlideThemeStyles,
   parseSlidesHtmlDocument,
+  sanitizeSlideCss,
   sanitizeSlideHtml,
   switchSlidesHtmlTheme,
   updateSlideInHtmlDocument,
@@ -257,7 +258,9 @@ export function SlidesViewer({
   );
 
   const scopedCss = useMemo(
-    () => getSlideThemeStyles(deck.theme) + (deck.customCss ? `\n${deck.customCss}` : ""),
+    () =>
+      getSlideThemeStyles(deck.theme) +
+      (deck.customCss ? `\n${sanitizeSlideCss(deck.customCss)}` : ""),
     [deck.theme, deck.customCss]
   );
 
@@ -448,8 +451,8 @@ export function SlidesViewer({
       }}
       className="flex flex-col h-full min-h-0 bg-[var(--bg-canvas)] outline-none relative"
     >
-      {/* 顶部 h-9 极简工具栏 */}
-      <div className="h-9 shrink-0 px-2 border-b border-[var(--border-hairline)] bg-[var(--bg-sidebar)] flex items-center justify-between gap-1 text-xs select-none">
+      {/* 顶部自适应极简工具栏（窄屏与分栏下自动换行，防止按钮重叠与挤出视口） */}
+      <div className="min-h-9 shrink-0 py-1 px-2 border-b border-[var(--border-hairline)] bg-[var(--bg-sidebar)] flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 text-xs select-none">
         {/* 左侧：页码 + 防溢出体检徽章 */}
         <div className="flex items-center gap-1.5 min-w-0">
           <div className="inline-flex items-center gap-0.5 shrink-0">
@@ -516,7 +519,7 @@ export function SlidesViewer({
                   <div className="px-3 py-3 text-[11px] text-[var(--text-secondary)] flex items-center gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-[var(--status-success)] shrink-0" />
                     <span>
-                      全部 {totalSlides} 页通过 1280×720 边界与 dom-to-pptx 白名单校验。
+                      全部 {totalSlides} 页通过 1280×720 边界与幻灯片格式引擎白名单校验。
                     </span>
                   </div>
                 ) : (
@@ -567,7 +570,7 @@ export function SlidesViewer({
         </div>
 
         {/* 右侧：风格切换 + 视图切换 + 双击改字 + 导出 PPTX + 全屏放映 */}
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
           {/* 5 套风格下拉 */}
           <div className="relative shrink-0" ref={themeMenuRef}>
             <button
@@ -590,7 +593,7 @@ export function SlidesViewer({
             </button>
 
             {themeMenuOpen && (
-              <div className="absolute right-0 top-8 w-60 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-elevated)] shadow-xl z-40 overflow-hidden py-1">
+              <div className="absolute left-0 sm:left-auto sm:right-0 top-8 w-60 max-w-[calc(100vw-2rem)] rounded-lg border border-[var(--border-strong)] bg-[var(--bg-elevated)] shadow-xl z-40 overflow-hidden py-1">
                 {SLIDE_THEMES.map((theme) => {
                   const active = theme.id === deck.theme;
                   return (
@@ -691,7 +694,7 @@ export function SlidesViewer({
             disabled={exporting || totalSlides === 0}
             onClick={() => void handleExportPptx()}
             className="h-6 inline-flex items-center gap-1 px-1.5 rounded-[4px] bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-[11px] font-medium text-white transition-colors cursor-pointer shrink-0 whitespace-nowrap"
-            title="使用 dom-to-pptx 将当前幻灯片无损导出为原生可编辑 .pptx"
+            title="使用幻灯片格式引擎将当前幻灯片无损导出为原生可编辑 .pptx"
           >
             {exporting ? (
               <Loader2 className="w-3 h-3 animate-spin shrink-0" />

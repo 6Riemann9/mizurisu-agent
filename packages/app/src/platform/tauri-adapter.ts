@@ -9,6 +9,7 @@ import type {
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "target", ".next"]);
 const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
 const MAX_IMPORT_FILES = 250;
+const WINDOWS_RESERVED_NAME_RE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
 
 export class TauriPlatformAdapter implements PlatformAdapter {
   readonly kind = "desktop" as const;
@@ -142,8 +143,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       throw new Error(`路径包含非法空字符: ${relativePath}`);
     }
     const parts = normalizedRel.split("/");
-    if (parts.some((seg) => seg === "" || seg === "." || seg === "..")) {
-      throw new Error(`检测到非法路径段（空段、. 或 ..）: ${relativePath}`);
+    if (
+      parts.some(
+        (seg) =>
+          seg === "" ||
+          seg === "." ||
+          seg === ".." ||
+          seg.endsWith(" ") ||
+          seg.endsWith(".") ||
+          WINDOWS_RESERVED_NAME_RE.test(seg)
+      )
+    ) {
+      throw new Error(`检测到非法路径段（空段、穿越、保留设备名或末尾空格/句点）: ${relativePath}`);
     }
 
     const { mkdir, writeFile } = await import("@tauri-apps/plugin-fs");

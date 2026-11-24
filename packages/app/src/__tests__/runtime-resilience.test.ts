@@ -676,4 +676,315 @@ describe("客户级运行时韧性、错误诊断与模型智能分类", () => {
     expect(capturedTurns[2].hasImage).toBe(true);
     expect(runSpy).toHaveBeenCalledTimes(3);
   });
+
+  it("并发中止旧轮次并立即启动新轮次 runTurn 时不串写旧消息也不误关新运行", async () => {
+    const vfs = new WorkspaceVFS();
+    let releaseFirstStream: () => void = () => undefined;
+    let streamIndex = 0;
+
+    const mockStreamFn: StreamFn = (model) => {
+      const stream = new AssistantMessageEventStream();
+      streamIndex += 1;
+
+      if (streamIndex === 1) {
+        // 第一个流挂起，直到被中止后延迟结束，模拟旧运行 finally 晚于新运行启动
+        new Promise<void>((resolve) => {
+          releaseFirstStream = resolve;
+        }).then(() => {
+          const abortedMsg: AssistantMessage = {
+            role: "assistant",
+            content: [{ type: "text", text: "旧轮次残余文本" }],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "aborted",
+            errorMessage: "old aborted",
+            timestamp: Date.now(),
+          };
+          stream.push({ type: "error", reason: "aborted", error: abortedMsg });
+          stream.end(abortedMsg);
+        });
+      } else {
+        queueMicrotask(() => {
+          const newMsg: AssistantMessage = {
+            role: "assistant",
+            content: [{ type: "text", text: "新轮次完整回答" }],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: {
+              input: 15,
+              output: 25,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 40,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "stop",
+            timestamp: Date.now(),
+          };
+          stream.push({ type: "start", partial: newMsg });
+          stream.push({ type: "done", reason: "stop", message: newMsg });
+          stream.end(newMsg);
+        });
+      }
+      return stream;
+    };
+
+    const updates: Array<{ sessionId: string; msgId: string; content: string }> = [];
+    const finishedSessions: string[] = [];
+    const runner = new PiAgentRunner(
+      vfs,
+      {
+        onAssistantUpdate: (sessionId, msg) => {
+          updates.push({ sessionId, msgId: msg.id, content: msg.content });
+        },
+        onToolModifiedFile: () => undefined,
+        onRequestApproval: (req) => req.resolve(true),
+        onRunFinished: (sessionId) => {
+          finishedSessions.push(sessionId);
+        },
+      },
+      mockStreamFn
+    );
+
+    const p1 = runner.runTurn({
+      sessionId: "sess_race",
+      userMessage: { id: "u_old", role: "user", content: "旧请求", createdAt: 10 },
+      historyBeforeUser: [],
+      config: { ...baseConfig, selectedModelId: "gpt-4o", protocolMode: "compatible" },
+      models: [],
+      settings: { theme: "dark", autoApproveDelete: false, previewWidth: 520 },
+    });
+
+    // 等第一个流进入等待，随后中止并立即发起新轮次
+    await new Promise((r) => setTimeout(r, 15));
+    runner.abort();
+    const p2 = runner.runTurn({
+      sessionId: "sess_race",
+      userMessage: { id: "u_new", role: "user", content: "新请求", createdAt: 20 },
+      historyBeforeUser: [],
+      config: { ...baseConfig, selectedModelId: "gpt-4o", protocolMode: "compatible" },
+      models: [],
+      settings: { theme: "dark", autoApproveDelete: false, previewWidth: 520 },
+    });
+
+    // 释放旧流，模拟旧运行 finally 晚于新运行启动触发
+    releaseFirstStream();
+    await Promise.all([p1, p2]);
+
+    expect(finishedSessions).toEqual(["sess_race"]);
+    expect(updates.some((u) => u.content.includes("旧轮次残余文本"))).toBe(false);
+    expect(updates[updates.length - 1]?.content).toBe("新轮次完整回答");
+  });
+
+  it("Store 并发 init() 防重入、纯图片/纯附件发送、rename 无缝切换预览与 Toast 队列上限清理", async () => {
+    const seedSpy = vi.spyOn(workspaceVfs, "seedStarterWorkspaceIfEmpty");
+    useAppStore.setState({ initialized: false, authSession: null, toasts: [] });
+
+    // 1. 并发两次 init()（模拟 StrictMode 双挂）应共享同一次初始化流程
+    await Promise.all([useAppStore.getState().init(), useAppStore.getState().init()]);
+    expect(seedSpy).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().sessions.length).toBe(1);
+
+    // 2. 纯图片无文字允许发送，且传给模型时补全占位提示语并支持 preloadedImages
+    const sentPrompts: Array<{ content: string; imageCount: number }> = [];
+    const vfsForRunner = new WorkspaceVFS();
+    let capturedPromptText = "";
+    const runner = new PiAgentRunner(
+      vfsForRunner,
+      {
+        onAssistantUpdate: () => undefined,
+        onToolModifiedFile: () => undefined,
+        onRequestApproval: (req) => req.resolve(true),
+        onRunFinished: () => undefined,
+      },
+      (model, context) => {
+        const lastUser = [...context.messages].reverse().find((m) => m.role === "user");
+        capturedPromptText =
+          typeof lastUser?.content === "string"
+            ? lastUser.content
+            : Array.isArray(lastUser?.content)
+              ? lastUser.content.map((b) => (b.type === "text" ? b.text : "[img]")).join(" ")
+              : "";
+        const stream = new AssistantMessageEventStream();
+        queueMicrotask(() => {
+          const msg: AssistantMessage = {
+            role: "assistant",
+            content: [{ type: "text", text: "已识别图片" }],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: {
+              input: 5,
+              output: 5,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 10,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "stop",
+            timestamp: Date.now(),
+          };
+          stream.push({ type: "start", partial: msg });
+          stream.push({ type: "done", reason: "stop", message: msg });
+          stream.end(msg);
+        });
+        return stream;
+      }
+    );
+
+    await runner.runTurn({
+      sessionId: "sess_img_only",
+      userMessage: {
+        id: "u_img_only",
+        role: "user",
+        content: "",
+        images: [{ name: "snap.png", mimeType: "image/png", dataUrl: "data:image/png;base64,AAAA" }],
+        createdAt: Date.now(),
+      },
+      historyBeforeUser: [],
+      config: { ...baseConfig, selectedModelId: "gpt-4o", protocolMode: "compatible" },
+      models: [],
+      settings: { theme: "dark", autoApproveDelete: false, previewWidth: 520 },
+      images: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
+    });
+    expect(capturedPromptText).toContain("请查看并分析我发送的图片内容");
+
+    vi.spyOn(PiAgentRunner.prototype, "runTurn").mockImplementation(async (opts) => {
+      sentPrompts.push({
+        content: opts.userMessage.content,
+        imageCount: opts.images?.length || 0,
+      });
+      useAppStore.setState({ isStreaming: false });
+    });
+
+    await useAppStore.getState().updateConfig({
+      baseUrl: "https://relay.example.com",
+      apiKey: "sk-mock-key",
+    });
+
+    const imgFile = new File([new Uint8Array([1, 2, 3])], "only.png", { type: "image/png" });
+    await useAppStore.getState().sendMessage("   ", [], [imgFile]);
+    expect(sentPrompts[0]).toEqual({ content: "", imageCount: 1 });
+
+    // 验证 preloadedImages（第 4 参数）也能触发纯图片发送
+    await useAppStore.getState().sendMessage("", [], [], [
+      { name: "pre.png", mimeType: "image/png", dataUrl: "data:image/png;base64,BBBB" },
+    ]);
+    expect(sentPrompts[1]).toEqual({ content: "", imageCount: 1 });
+
+    // 验证 rename 事件触发时预览路径无缝切换且不经由 null 闪烁
+    const seenPreviewStates: Array<string | null> = [];
+    const unsubStore = useAppStore.subscribe((s) => {
+      seenPreviewStates.push(s.activePreviewPath);
+    });
+    await workspaceVfs.writeText("before.md", "hello");
+    useAppStore.getState().openPreview("before.md");
+    await useAppStore.getState().renameWorkspaceFile("before.md", "after.md");
+    unsubStore();
+    expect(useAppStore.getState().activePreviewPath).toBe("after.md");
+    expect(seenPreviewStates).not.toContain(null);
+
+    // 验证纯附件无文字发送
+    await useAppStore.getState().sendMessage("", ["after.md"], []);
+    expect(sentPrompts[2]).toEqual({ content: "", imageCount: 0 });
+
+    // 验证 pushToast 超过 4 条时淘汰旧 Toast 并清理对应定时器
+    vi.useFakeTimers();
+    useAppStore.setState({ toasts: [] });
+    for (let i = 1; i <= 6; i++) {
+      useAppStore.getState().pushToast(`提示 ${i}`, "info");
+    }
+    expect(useAppStore.getState().toasts.map((t) => t.message)).toEqual([
+      "提示 3",
+      "提示 4",
+      "提示 5",
+      "提示 6",
+    ]);
+    expect(vi.getTimerCount()).toBe(4);
+    vi.advanceTimersByTime(4100);
+    expect(useAppStore.getState().toasts.length).toBe(0);
+    vi.useRealTimers();
+
+    // 验证 resetAllData 优先预览 .xlsx 文件
+    await useAppStore.getState().resetAllData();
+    expect(useAppStore.getState().activePreviewPath).toBe("示例_季度销售数据.xlsx");
+  });
+
+  it("PiAgentRunner.abort({ discardResult: true }) 同步推进序号并抑制旧轮次 finally 回写", async () => {
+    const vfs = new WorkspaceVFS();
+    let releaseStream: () => void = () => undefined;
+
+    const mockStreamFn: StreamFn = (model) => {
+      const stream = new AssistantMessageEventStream();
+      new Promise<void>((resolve) => {
+        releaseStream = resolve;
+      }).then(() => {
+        const abortedMsg: AssistantMessage = {
+          role: "assistant",
+          content: [{ type: "text", text: "应被丢弃的半段文本" }],
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: "aborted",
+          errorMessage: "discarded",
+          timestamp: Date.now(),
+        };
+        stream.push({ type: "error", reason: "aborted", error: abortedMsg });
+        stream.end(abortedMsg);
+      });
+      return stream;
+    };
+
+    const updatedTexts: string[] = [];
+    let finishedCount = 0;
+    const runner = new PiAgentRunner(
+      vfs,
+      {
+        onAssistantUpdate: (_sid, msg) => {
+          if (msg.content) updatedTexts.push(msg.content);
+        },
+        onToolModifiedFile: () => undefined,
+        onRequestApproval: (req) => req.resolve(true),
+        onRunFinished: () => {
+          finishedCount += 1;
+        },
+      },
+      mockStreamFn
+    );
+
+    const runPromise = runner.runTurn({
+      sessionId: "sess_discard",
+      userMessage: { id: "u_discard", role: "user", content: "测试丢弃", createdAt: 1 },
+      historyBeforeUser: [],
+      config: { ...baseConfig, selectedModelId: "gpt-4o", protocolMode: "compatible" },
+      models: [],
+      settings: { theme: "dark", autoApproveDelete: false, previewWidth: 520 },
+    });
+
+    await new Promise((r) => setTimeout(r, 15));
+    runner.abort({ discardResult: true });
+    releaseStream();
+    await runPromise;
+
+    expect(updatedTexts).toEqual([]);
+    expect(finishedCount).toBe(0);
+  });
 });

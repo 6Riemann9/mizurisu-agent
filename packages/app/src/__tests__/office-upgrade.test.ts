@@ -262,8 +262,8 @@ describe("Office 升级、打包导出与工作区增强", () => {
     expect(pdfExportRead.pages[0].text).toContain("Weekly Brief");
   });
 
-  it("WorkspaceVFS.renameFile 支持安全改名、快照留存与重名覆盖保护", async () => {
-    const events: Array<{ type: string; path?: string }> = [];
+  it("WorkspaceVFS.renameFile 支持安全改名、快照留存、原子 rename 事件与重名覆盖保护", async () => {
+    const events: Array<{ type: string; path?: string; previousPath?: string }> = [];
     const unsubscribe = vfs.subscribe((ev) => events.push(ev));
 
     await vfs.writeText("draft/v1.md", "合同初稿内容");
@@ -278,6 +278,9 @@ describe("Office 升级、打包导出与工作区增强", () => {
     await expect(vfs.renameFile("/draft/v1.md", "draft/v1.md")).rejects.toThrow("相同");
     await expect(vfs.renameFile("missing.md", "other.md")).rejects.toThrow("不存在");
 
+    // 清空前置写入事件，单独验证 renameFile 仅发射 1 次原子 rename 事件
+    events.length = 0;
+
     // 正常重命名
     const meta = await vfs.renameFile("/draft/v1.md", "final/contract_v1.md");
     expect(meta.path).toBe("final/contract_v1.md");
@@ -287,10 +290,9 @@ describe("Office 升级、打包导出与工作区增强", () => {
 
     const oldSnapshots = await vfs.getSnapshots("draft/v1.md");
     expect(oldSnapshots.length).toBeGreaterThanOrEqual(1);
-    expect(events.some((e) => e.type === "delete" && e.path === "draft/v1.md")).toBe(true);
-    expect(events.some((e) => e.type === "write" && e.path === "final/contract_v1.md")).toBe(
-      true
-    );
+    expect(events).toEqual([
+      { type: "rename", path: "final/contract_v1.md", previousPath: "draft/v1.md" },
+    ]);
 
     unsubscribe();
   });
@@ -305,7 +307,9 @@ describe("Office 升级、打包导出与工作区增强", () => {
     await vfs.seedStarterWorkspaceIfEmpty();
     const tpl = await vfs.readText("示例_项目周报模板.md");
     expect(tpl).toContain("Mizurisu Agent");
+    expect(tpl).toContain("Mizurisu / 多模型 AI 中转网关");
     expect(tpl).not.toContain("Pi Agent");
+    expect(tpl).not.toContain("New-API");
   });
 
   it("中文 PDF 在 Canvas 环境下支持结构化 sections、分页表格与中文页码", async () => {

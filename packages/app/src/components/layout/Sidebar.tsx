@@ -1,23 +1,32 @@
 import {
+  Archive,
   ArrowUpRight,
+  Check,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
+  FileDown,
   FolderOpen,
+  Loader2,
   LogOut,
   MessageSquare,
   MessageSquarePlus,
+  Pencil,
   RefreshCw,
   Search,
   Settings,
   Trash2,
   Upload,
   Wand2,
+  X,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BUILTIN_SKILLS } from "../../agent/skills";
 import { formatQuotaDisplay, maskApiKey } from "../../newapi/auth";
+import { getMizurisuConsoleLinks } from "../../newapi/client";
 import { getPlatformAdapter } from "../../platform";
 import { useAppStore } from "../../store/useAppStore";
+import type { ChatSession, WorkspaceFileMeta } from "../../types";
 import { FileIcon, formatFileSize } from "../common/FileBadge";
 
 export function Sidebar({
@@ -42,15 +51,20 @@ export function Sidebar({
     createSession,
     selectSession,
     deleteSession,
+    renameSession,
+    exportSessionMarkdown,
     openPreview,
     uploadFilesToWorkspace,
     deleteWorkspaceFile,
+    renameWorkspaceFile,
+    exportWorkspaceZip,
     refreshBilling,
     refreshAccountSession,
     setActiveSkill,
     setSettingsOpen,
     setCommandPaletteOpen,
     mountNativeDirectory,
+    pushToast,
     logout,
   } = useAppStore();
 
@@ -60,13 +74,186 @@ export function Sidebar({
   const [skillsOpen, setSkillsOpen] = useState(true);
   const [dragOverFiles, setDragOverFiles] = useState(false);
 
+  // 工作区搜索、ZIP 导出、防误删二次确认与文件/会话行内重命名状态
+  const [fileQuery, setFileQuery] = useState("");
+  const [exportingZip, setExportingZip] = useState(false);
+  const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
+  const confirmDeleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [editingFilePath, setEditingFilePath] = useState<string | null>(null);
+  const [editingFileName, setEditingFileName] = useState("");
+  const [renamingFile, setRenamingFile] = useState(false);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionTitle, setEditingSessionTitle] = useState("");
+  const [renamingSession, setRenamingSession] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (confirmDeleteTimerRef.current) {
+        clearTimeout(confirmDeleteTimerRef.current);
+      }
+    };
+  }, []);
+
+  const clearDeleteConfirm = () => {
+    if (confirmDeleteTimerRef.current) {
+      clearTimeout(confirmDeleteTimerRef.current);
+      confirmDeleteTimerRef.current = null;
+    }
+    setConfirmDeletePath(null);
+  };
+
+  const armDeleteConfirm = (path: string) => {
+    if (confirmDeleteTimerRef.current) {
+      clearTimeout(confirmDeleteTimerRef.current);
+    }
+    setConfirmDeletePath(path);
+    confirmDeleteTimerRef.current = setTimeout(() => {
+      setConfirmDeletePath((cur) => (cur === path ? null : cur));
+      confirmDeleteTimerRef.current = null;
+    }, 3000);
+  };
+
   const platform = getPlatformAdapter();
   const allSkills = [...BUILTIN_SKILLS, ...customSkills];
+  const consoleLinks = getMizurisuConsoleLinks(config.baseUrl);
+  const isNonGuest = Boolean(authSession && authSession.mode !== "guest");
+
+  const normalizedFileQuery = fileQuery.trim().toLowerCase();
+  const filteredFiles = normalizedFileQuery
+    ? files.filter(
+        (f) =>
+          f.name.toLowerCase().includes(normalizedFileQuery) ||
+          f.path.toLowerCase().includes(normalizedFileQuery)
+      )
+    : files;
+
+  const uploadWorkspaceBatch = async (fileList: FileList) => {
+    try {
+      await uploadFilesToWorkspace(fileList);
+    } catch (err) {
+      pushToast(
+        `导入文件失败：${err instanceof Error ? err.message : String(err)}`,
+        "error"
+      );
+    }
+  };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) {
-      await uploadFilesToWorkspace(e.target.files);
-      e.target.value = "";
+      try {
+        await uploadWorkspaceBatch(e.target.files);
+      } finally {
+        e.target.value = "";
+      }
+    }
+  };
+
+  const handleDeleteFile = async (path: string) => {
+    clearDeleteConfirm();
+    try {
+      await deleteWorkspaceFile(path);
+    } catch (err) {
+      pushToast(
+        `删除文件失败：${err instanceof Error ? err.message : String(err)}`,
+        "error"
+      );
+    }
+  };
+
+  const handleDeleteSession = async (id: string) => {
+    try {
+      await deleteSession(id);
+    } catch (err) {
+      pushToast(
+        `删除会话失败：${err instanceof Error ? err.message : String(err)}`,
+        "error"
+      );
+    }
+  };
+
+  const handleExportZip = async () => {
+    if (files.length === 0 || exportingZip) return;
+    setExportingZip(true);
+    try {
+      await exportWorkspaceZip();
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setExportingZip(false);
+    }
+  };
+
+  const startFileRename = (file: WorkspaceFileMeta) => {
+    clearDeleteConfirm();
+    setEditingSessionId(null);
+    setEditingFilePath(file.path);
+    setEditingFileName(file.name);
+  };
+
+  const cancelFileRename = () => {
+    if (renamingFile) return;
+    setEditingFilePath(null);
+    setEditingFileName("");
+  };
+
+  const commitFileRename = async (file: WorkspaceFileMeta) => {
+    if (renamingFile) return;
+    const trimmed = editingFileName.trim();
+    if (!trimmed) {
+      pushToast("文件名不能为空", "error");
+      return;
+    }
+    const parentDir = file.path.includes("/")
+      ? file.path.slice(0, file.path.lastIndexOf("/") + 1)
+      : "";
+    const nextPath = trimmed.includes("/") ? trimmed : `${parentDir}${trimmed}`;
+    if (nextPath === file.path) {
+      setEditingFilePath(null);
+      return;
+    }
+    setRenamingFile(true);
+    try {
+      await renameWorkspaceFile(file.path, nextPath);
+      setEditingFilePath(null);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setRenamingFile(false);
+    }
+  };
+
+  const startSessionRename = (session: ChatSession) => {
+    setEditingFilePath(null);
+    setEditingSessionId(session.id);
+    setEditingSessionTitle(session.title);
+  };
+
+  const cancelSessionRename = () => {
+    if (renamingSession) return;
+    setEditingSessionId(null);
+    setEditingSessionTitle("");
+  };
+
+  const commitSessionRename = async (session: ChatSession) => {
+    if (renamingSession) return;
+    const nextTitle = editingSessionTitle.trim();
+    if (!nextTitle) {
+      pushToast("会话名称不能为空", "error");
+      return;
+    }
+    if (nextTitle === session.title) {
+      setEditingSessionId(null);
+      return;
+    }
+    setRenamingSession(true);
+    try {
+      await renameSession(session.id, nextTitle);
+      setEditingSessionId(null);
+      pushToast("会话名称已更新", "success");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setRenamingSession(false);
     }
   };
 
@@ -154,7 +341,7 @@ export function Sidebar({
             e.preventDefault();
             setDragOverFiles(false);
             if (e.dataTransfer.files?.length) {
-              await uploadFilesToWorkspace(e.dataTransfer.files);
+              await uploadWorkspaceBatch(e.dataTransfer.files);
             }
           }}
           className={`rounded-md transition ${
@@ -196,6 +383,20 @@ export function Sidebar({
               >
                 <Upload className="w-3 h-3" />
               </button>
+              <button
+                type="button"
+                disabled={files.length === 0 || exportingZip}
+                onClick={() => void handleExportZip()}
+                className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                title={files.length === 0 ? "暂无文件可打包" : "打包导出 ZIP"}
+                aria-label="打包导出 ZIP"
+              >
+                {exportingZip ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Archive className="w-3 h-3" />
+                )}
+              </button>
               {platform.canMountNativeDir && (
                 <button
                   type="button"
@@ -210,46 +411,203 @@ export function Sidebar({
           </div>
 
           {filesOpen && (
-            <div className="mt-0.5 space-y-0.5">
-              {files.length === 0 ? (
-                <div className="px-2 py-2 text-[11px] text-[var(--text-muted)]">
-                  拖拽或点击右上角导入文档
-                </div>
-              ) : (
-                files.map((f) => {
-                  const active = activePreviewPath === f.path;
-                  return (
-                    <div
-                      key={f.path}
-                      onClick={() => openPreview(f.path)}
-                      className={`group h-7 px-2 rounded-md flex items-center justify-between gap-1.5 text-[12px] cursor-pointer transition ${
-                        active
-                          ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-medium"
-                          : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <FileIcon category={f.category} className="w-3.5 h-3.5 shrink-0" />
-                        <span className="truncate">{f.name}</span>
-                      </div>
-                      <span className="text-[10px] text-[var(--text-muted)] tabular-nums shrink-0 group-hover:hidden">
-                        {formatFileSize(f.size)}
-                      </span>
+            <div className="mt-1 space-y-1">
+              {files.length > 0 && (
+                <div className="px-1">
+                  <div className="h-7 px-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] focus-within:border-[var(--border-strong)] flex items-center gap-1.5 transition">
+                    <Search className="w-3 h-3 text-[var(--text-muted)] shrink-0" />
+                    <input
+                      type="text"
+                      value={fileQuery}
+                      onChange={(e) => setFileQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape" && fileQuery) {
+                          e.stopPropagation();
+                          setFileQuery("");
+                        }
+                      }}
+                      placeholder="搜索工作区文件..."
+                      aria-label="搜索工作区文件"
+                      className="w-full min-w-0 bg-transparent text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none"
+                    />
+                    {fileQuery && (
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteWorkspaceFile(f.path);
-                        }}
-                        className="hidden group-hover:inline-flex w-5 h-5 items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--status-danger)] shrink-0 cursor-pointer"
-                        title="删除文件"
+                        onClick={() => setFileQuery("")}
+                        className="w-4 h-4 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0 cursor-pointer"
+                        title="清空搜索"
+                        aria-label="清空搜索"
                       >
-                        <Trash2 className="w-3 h-3" />
+                        <X className="w-2.5 h-2.5" />
                       </button>
-                    </div>
-                  );
-                })
+                    )}
+                  </div>
+                </div>
               )}
+
+              <div className="space-y-0.5">
+                {files.length === 0 ? (
+                  <div className="px-2 py-2 text-[11px] text-[var(--text-muted)]">
+                    拖拽或点击右上角导入文档
+                  </div>
+                ) : filteredFiles.length === 0 ? (
+                  <div className="px-2 py-3 text-center space-y-1">
+                    <div className="text-[11px] text-[var(--text-muted)] truncate">
+                      未找到匹配「{fileQuery.trim()}」的文件
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setFileQuery("")}
+                      className="text-[11px] text-[var(--accent)] hover:underline cursor-pointer"
+                    >
+                      清空筛选
+                    </button>
+                  </div>
+                ) : (
+                  filteredFiles.map((f) => {
+                    const active = activePreviewPath === f.path;
+                    const isEditing = editingFilePath === f.path;
+
+                    if (isEditing) {
+                      return (
+                        <div
+                          key={f.path}
+                          onClick={(e) => e.stopPropagation()}
+                          className="h-7 px-1.5 rounded-md flex items-center gap-1 bg-[var(--bg-active)] border border-[var(--border-strong)]"
+                        >
+                          <FileIcon category={f.category} className="w-3.5 h-3.5 shrink-0" />
+                          <input
+                            type="text"
+                            value={editingFileName}
+                            autoFocus
+                            disabled={renamingFile}
+                            onFocus={(e) => {
+                              const dotIdx = e.currentTarget.value.lastIndexOf(".");
+                              if (dotIdx > 0) {
+                                e.currentTarget.setSelectionRange(0, dotIdx);
+                              } else {
+                                e.currentTarget.select();
+                              }
+                            }}
+                            onChange={(e) => setEditingFileName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                void commitFileRename(f);
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelFileRename();
+                              }
+                            }}
+                            onBlur={cancelFileRename}
+                            className="flex-1 min-w-0 bg-transparent text-[12px] text-[var(--text-primary)] outline-none"
+                            aria-label={`重命名文件 ${f.name}`}
+                          />
+                          <button
+                            type="button"
+                            disabled={renamingFile}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => void commitFileRename(f)}
+                            className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--accent)] shrink-0 cursor-pointer"
+                            title="确认重命名"
+                          >
+                            <Check className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={renamingFile}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={cancelFileRename}
+                            className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0 cursor-pointer"
+                            title="取消"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    }
+
+                    const isConfirmingDelete = confirmDeletePath === f.path;
+
+                    return (
+                      <div
+                        key={f.path}
+                        onClick={() => {
+                          if (!isConfirmingDelete) {
+                            openPreview(f.path);
+                          }
+                        }}
+                        className={`group h-7 px-2 rounded-md flex items-center justify-between gap-1.5 text-[12px] cursor-pointer transition ${
+                          active
+                            ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-medium"
+                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FileIcon category={f.category} className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate" title={f.path}>
+                            {f.name}
+                          </span>
+                        </div>
+                        {isConfirmingDelete ? (
+                          <div
+                            className="flex items-center gap-1 shrink-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteFile(f.path)}
+                              className="h-5 px-1.5 rounded bg-[var(--status-danger)] text-white text-[10px] font-medium hover:opacity-90 cursor-pointer whitespace-nowrap"
+                              title="再次点击确认删除该文件"
+                            >
+                              确认删除
+                            </button>
+                            <button
+                              type="button"
+                              onClick={clearDeleteConfirm}
+                              className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                              title="取消删除"
+                              aria-label="取消删除"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <span className="hidden md:inline text-[10px] text-[var(--text-muted)] tabular-nums shrink-0 md:group-hover:hidden">
+                              {formatFileSize(f.size)}
+                            </span>
+                            <div className="flex md:hidden md:group-hover:flex items-center gap-0.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  startFileRename(f);
+                                }}
+                                className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                                title="重命名文件"
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  armDeleteConfirm(f.path);
+                                }}
+                                className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--status-danger)] cursor-pointer"
+                                title="删除文件"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
             </div>
           )}
         </section>
@@ -275,6 +633,60 @@ export function Sidebar({
             <div className="mt-0.5 space-y-0.5">
               {sessions.map((s) => {
                 const active = s.id === activeSessionId;
+                const isEditing = editingSessionId === s.id;
+
+                if (isEditing) {
+                  return (
+                    <div
+                      key={s.id}
+                      onClick={(e) => e.stopPropagation()}
+                      className="h-7 px-1.5 rounded-md flex items-center gap-1 bg-[var(--bg-active)] border border-[var(--border-strong)]"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
+                      <input
+                        type="text"
+                        value={editingSessionTitle}
+                        autoFocus
+                        disabled={renamingSession}
+                        onFocus={(e) => e.currentTarget.select()}
+                        onChange={(e) => setEditingSessionTitle(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void commitSessionRename(s);
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            cancelSessionRename();
+                          }
+                        }}
+                        onBlur={cancelSessionRename}
+                        className="flex-1 min-w-0 bg-transparent text-[12px] text-[var(--text-primary)] outline-none"
+                        aria-label={`重命名会话 ${s.title}`}
+                      />
+                      <button
+                        type="button"
+                        disabled={renamingSession}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => void commitSessionRename(s)}
+                        className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--accent)] shrink-0 cursor-pointer"
+                        title="保存名称"
+                      >
+                        <Check className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={renamingSession}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={cancelSessionRename}
+                        className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0 cursor-pointer"
+                        title="取消"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                }
+
                 return (
                   <div
                     key={s.id}
@@ -289,20 +701,49 @@ export function Sidebar({
                       <MessageSquare className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
                       <span className="truncate">{s.title}</span>
                     </div>
-                    <span className="text-[10px] text-[var(--text-muted)] tabular-nums shrink-0 group-hover:hidden">
+                    <span className="hidden md:inline text-[10px] text-[var(--text-muted)] tabular-nums shrink-0 md:group-hover:hidden">
                       {s.messages.length}
                     </span>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteSession(s.id);
-                      }}
-                      className="hidden group-hover:inline-flex w-5 h-5 items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--status-danger)] shrink-0 cursor-pointer"
-                      title="删除会话"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+                    <div className="flex md:hidden md:group-hover:flex items-center gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startSessionRename(s);
+                        }}
+                        className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                        title="重命名会话"
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          exportSessionMarkdown(s.id).catch((err) => {
+                            pushToast(
+                              err instanceof Error ? err.message : String(err),
+                              "error"
+                            );
+                          });
+                        }}
+                        className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                        title="导出 Markdown"
+                      >
+                        <FileDown className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleDeleteSession(s.id);
+                        }}
+                        className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--status-danger)] cursor-pointer"
+                        title="删除会话"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                 );
               })}
@@ -362,7 +803,7 @@ export function Sidebar({
                             setActiveSkill(sk.id);
                             onUseSkillPrompt(sk.prompt, sk.id);
                           }}
-                          className="opacity-0 group-hover:opacity-100 w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer"
+                          className="opacity-75 md:opacity-0 md:group-hover:opacity-100 w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer"
                           title="挂载并填入提示词"
                         >
                           <ArrowUpRight className="w-3 h-3" />
@@ -400,7 +841,7 @@ export function Sidebar({
             {tokenSubtitle}
           </span>
           <div className="flex items-center gap-0.5 shrink-0">
-            {authSession && authSession.mode !== "guest" && (
+            {isNonGuest && (
               <button
                 type="button"
                 onClick={() => {
@@ -434,6 +875,21 @@ export function Sidebar({
             </button>
           </div>
         </div>
+
+        <a
+          href={consoleLinks.topupUrl}
+          target="_blank"
+          rel="noreferrer"
+          className={
+            isNonGuest
+              ? "mt-2 h-6.5 px-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] flex items-center justify-between text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition"
+              : "mt-1.5 h-6 px-1.5 rounded flex items-center justify-between text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition"
+          }
+          title={isNonGuest ? "前往站点控制台管理令牌与充值" : "前往站点控制台登录或充值"}
+        >
+          <span className="truncate">前往控制台 / 充值</span>
+          <ExternalLink className="w-3 h-3 shrink-0" />
+        </a>
       </div>
     </aside>
   );

@@ -1,7 +1,7 @@
 import { exportToPptx } from "dom-to-pptx";
-import { sanitizeSlideHtml } from "./slides-sanitize";
+import { sanitizeSlideCss, sanitizeSlideHtml } from "./slides-sanitize";
 
-export { sanitizeSlideHtml } from "./slides-sanitize";
+export { sanitizeSlideCss, sanitizeSlideHtml } from "./slides-sanitize";
 
 export type SlideThemeId =
   | "linear-dark"
@@ -881,7 +881,7 @@ export function buildSlidesHtmlDocument(spec: SlideDeckSpec): string {
     SLIDE_THEMES.find((t) => t.id === theme) ?? SLIDE_THEMES[0];
   const deckTitle = spec.title?.trim() || "未命名演示文稿";
   const themeCss = stripClosingStyleTag(getSlideThemeStyles(theme));
-  const customCss = stripClosingStyleTag((spec.customCss || "").trim());
+  const customCss = stripClosingStyleTag(sanitizeSlideCss((spec.customCss || "").trim()));
   const metaJson = JSON.stringify({
     version: 1,
     title: deckTitle,
@@ -1036,7 +1036,7 @@ export function parseSlidesHtmlWithRegex(html: string): SlideDeckSpec {
     /<style\b[^>]*(?:data-mizurisu-custom|data-pidesk-custom)[^>]*>([\s\S]*?)<\/style>/i
   );
   if (customStyleMatch) {
-    const cssText = customStyleMatch[1].trim();
+    const cssText = sanitizeSlideCss(customStyleMatch[1].trim());
     if (cssText) customCss = cssText;
   }
 
@@ -1106,7 +1106,7 @@ export function parseSlidesHtmlDocument(html: string): SlideDeckSpec {
     const customStyleEl = doc.querySelector(
       "style[data-mizurisu-custom], style[data-pidesk-custom]"
     );
-    const customCssRaw = customStyleEl?.textContent?.trim();
+    const customCssRaw = sanitizeSlideCss(customStyleEl?.textContent?.trim() || "");
     const customCss = customCssRaw ? customCssRaw : undefined;
 
     const rawSlideEls = Array.from(doc.querySelectorAll("section.slide"));
@@ -1192,13 +1192,13 @@ const CSS_BLACKLIST_RULES: CssBlacklistRule[] = [
     code: "CSS_FORBIDDEN_BACKDROP_FILTER",
     pattern: /backdrop-filter\b/i,
     message:
-      "检测到禁止的 CSS 属性 backdrop-filter（dom-to-pptx 不支持毛玻璃滤镜，请改用纯色或 rgba 半透明背景）",
+      "检测到禁止的 CSS 属性 backdrop-filter（幻灯片导出引擎不支持毛玻璃滤镜，请改用纯色或 rgba 半透明背景）",
   },
   {
     code: "CSS_FORBIDDEN_RADIAL_GRADIENT",
     pattern: /radial-gradient\s*\(/i,
     message:
-      "检测到禁止的 radial-gradient（dom-to-pptx 仅支持 linear-gradient 与矢量 SVG）",
+      "检测到禁止的 radial-gradient（幻灯片导出引擎仅支持 linear-gradient 与矢量 SVG）",
   },
   {
     code: "CSS_FORBIDDEN_CONIC_GRADIENT",
@@ -1328,7 +1328,7 @@ function createOffscreenSlideHost(
   const styleEl = document.createElement("style");
   styleEl.textContent =
     getSlideThemeStyles(deck.theme) +
-    (deck.customCss ? `\n${deck.customCss}` : "");
+    (deck.customCss ? `\n${sanitizeSlideCss(deck.customCss)}` : "");
   host.appendChild(styleEl);
 
   const slideEls: HTMLElement[] = deck.slides.map((slide, idx) => {
@@ -1591,7 +1591,7 @@ export function createStarterDemoSlidesHtml(): string {
       {
         title: "Bento 双栏架构与核心能力矩阵",
         notes:
-          "架构亮点：通过 1280×720 HTML-First 渲染引擎 + dom-to-pptx 坐标提取，彻底告别传统模板简陋排版。",
+          "架构亮点：通过 1280×720 HTML-First 渲染引擎 + 幻灯片格式引擎坐标提取，彻底告别传统模板简陋排版。",
         html: `
 <div class="slide-header">
   <div class="slide-header-main">
@@ -1612,12 +1612,12 @@ export function createStarterDemoSlidesHtml(): string {
         <div class="badge is-success">0 溢出自检</div>
       </div>
       <h3 class="slide-h3">HTML-First 幻灯片引擎与原生 PPTX 导出</h3>
-      <p class="card-desc">以 1280×720 精密画布承载 KPI 巨字、Bento 卡与矢量 SVG，通过 dom-to-pptx 一键导出可编辑矢量幻灯片。</p>
+      <p class="card-desc">以 1280×720 精密画布承载 KPI 巨字、Bento 卡与矢量 SVG，通过幻灯片格式引擎一键导出可编辑矢量幻灯片。</p>
     </div>
 
     <div class="bento-card span-5">
       <div class="badge-row">
-        <div class="badge">New-API 鉴权</div>
+        <div class="badge">站点鉴权</div>
       </div>
       <h3 class="slide-h3">账号登录自动同步 Key</h3>
       <p class="card-desc">支持站点账号密码一键签发与揭露令牌，自动探测站内真实模型列表，消除手工配置摩擦。</p>
@@ -1634,7 +1634,7 @@ export function createStarterDemoSlidesHtml(): string {
     </div>
 
     <div class="bento-card span-4">
-      <div class="card-title">Web Worker 计算沙箱</div>
+      <div class="card-title">隔离 JS 计算沙箱</div>
       <p class="card-desc">隔离 JS 环境完成数据清洗与透视聚合，杜绝大模型数字幻觉。</p>
     </div>
   </div>

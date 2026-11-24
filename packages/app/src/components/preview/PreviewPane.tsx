@@ -7,6 +7,7 @@ import {
   FileText,
   FileType,
   History,
+  Loader2,
   Maximize2,
   Minimize2,
   Presentation,
@@ -14,10 +15,19 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { detectFileCategory, getFileExtension, inferMimeType } from "../../office";
+import {
+  createPdfDocument,
+  createWordDocument,
+  detectFileCategory,
+  getFileExtension,
+  inferMimeType,
+  markdownToPdfSpec,
+  markdownToWordSpec,
+} from "../../office";
 import { workspaceVfs } from "../../storage/workspace-vfs";
 import { useAppStore } from "../../store/useAppStore";
 import type { FileSnapshot, OfficeFileCategory } from "../../types";
+import { ErrorBoundary } from "../common/ErrorBoundary";
 import { ExcelViewer } from "./ExcelViewer";
 import { PdfViewer } from "./PdfViewer";
 import { PptViewer } from "./PptViewer";
@@ -79,22 +89,25 @@ export function PreviewPane() {
     previewRevision,
     previewExpanded,
     setPreviewExpanded,
+    openPreview,
     closePreview,
     exportWorkspaceFile,
+    pushToast,
   } = useAppStore();
 
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
   const [snapshots, setSnapshots] = useState<FileSnapshot[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [convertingFormat, setConvertingFormat] = useState<"docx" | "pdf" | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setHistoryOpen(false);
+    setSnapshots([]);
     if (!activePreviewPath) {
       setBytes(null);
-      setSnapshots([]);
       return;
     }
     let cancelled = false;
@@ -109,7 +122,10 @@ export function PreviewPane() {
           setSnapshots(snaps);
         }
       } catch {
-        if (!cancelled) setBytes(null);
+        if (!cancelled) {
+          setBytes(null);
+          setSnapshots([]);
+        }
       }
     })();
     return () => {
@@ -168,12 +184,78 @@ export function PreviewPane() {
 
   const category = detectFileCategory(activePreviewPath);
   const formatTag = getFormatTag(activePreviewPath, category);
+  const isMarkdown =
+    category === "markdown" || /\.(md|mdx|markdown)$/i.test(activePreviewPath);
+
+  /** 为避免静默覆盖已有目标文件，若用户取消覆盖则自动生成带序号的新文件名 */
+  const resolveConversionTargetPath = async (
+    stem: string,
+    ext: "docx" | "pdf"
+  ): Promise<string> => {
+    const preferredPath = `${stem}.${ext}`;
+    if (!(await workspaceVfs.exists(preferredPath))) {
+      return preferredPath;
+    }
+    const shouldOverwrite =
+      typeof window !== "undefined" && typeof window.confirm === "function"
+        ? window.confirm(
+            `工作区已存在「${preferredPath}」，是否覆盖原文件？\n点击“取消”将自动另存为带序号的新版本文件。`
+          )
+        : false;
+    if (shouldOverwrite) {
+      return preferredPath;
+    }
+    let index = 2;
+    while (index < 1000) {
+      const candidate = `${stem} (${index}).${ext}`;
+      if (!(await workspaceVfs.exists(candidate))) {
+        return candidate;
+      }
+      index += 1;
+    }
+    return `${stem}_${Date.now()}.${ext}`;
+  };
+
+  const handleConvertMarkdown = async (targetFormat: "docx" | "pdf") => {
+    if (!activePreviewPath || !bytes || convertingFormat) return;
+    setConvertingFormat(targetFormat);
+    const formatLabel = targetFormat === "docx" ? "Word" : "PDF";
+    try {
+      const sourceText = new TextDecoder("utf-8").decode(bytes);
+      const stem = activePreviewPath.replace(/\.(md|mdx|markdown)$/i, "");
+      const fallbackTitle = (stem.split("/").pop() || stem).trim() || "导出文档";
+      const targetPath = await resolveConversionTargetPath(stem, targetFormat);
+
+      const generatedBytes =
+        targetFormat === "docx"
+          ? await createWordDocument(markdownToWordSpec(sourceText, fallbackTitle))
+          : await createPdfDocument(markdownToPdfSpec(sourceText, fallbackTitle));
+
+      await workspaceVfs.writeBytes(targetPath, generatedBytes, {
+        snapshotNote: `从 Markdown 转存 ${formatLabel}`,
+      });
+      openPreview(targetPath);
+      pushToast(
+        `已转存 ${formatLabel} 至工作区并打开预览，可点击右上角导出下载：${targetPath}`,
+        "success"
+      );
+    } catch (err) {
+      pushToast(
+        `转存 ${targetFormat.toUpperCase()} 失败：${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        "error"
+      );
+    } finally {
+      setConvertingFormat(null);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-[var(--bg-canvas)] border-l border-[var(--border-hairline)] relative">
-      {/* 极简对齐顶栏：h-11 (44px) */}
-      <header className="h-11 shrink-0 px-3 border-b border-[var(--border-hairline)] bg-[var(--bg-surface)] flex items-center justify-between gap-2 select-none">
-        <div className="flex items-center gap-2 min-w-0">
+      {/* 极简自适应顶栏：窄屏自动折行保护文件名始终可见 */}
+      <header className="min-h-11 py-1.5 shrink-0 px-3 border-b border-[var(--border-hairline)] bg-[var(--bg-surface)] flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 select-none">
+        <div className="flex items-center gap-2 min-w-[120px] flex-1">
           <MonochromeFileIcon category={category} className="w-3.5 h-3.5" />
           <span
             className="text-xs font-medium text-[var(--text-primary)] truncate"
@@ -186,7 +268,40 @@ export function PreviewPane() {
           </span>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0 relative" ref={historyRef}>
+        <div className="flex items-center gap-1 shrink-0 ml-auto relative" ref={historyRef}>
+          {isMarkdown && (
+            <>
+              <button
+                type="button"
+                disabled={convertingFormat !== null}
+                onClick={() => void handleConvertMarkdown("docx")}
+                className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50 whitespace-nowrap cursor-pointer"
+                title="将当前 Markdown 文档转存为 Word (.docx)"
+              >
+                {convertingFormat === "docx" ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <FileType className="w-3 h-3" />
+                )}
+                <span>{convertingFormat === "docx" ? "转换中…" : "转存 Word"}</span>
+              </button>
+              <button
+                type="button"
+                disabled={convertingFormat !== null}
+                onClick={() => void handleConvertMarkdown("pdf")}
+                className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50 whitespace-nowrap cursor-pointer"
+                title="将当前 Markdown 文档转存为 PDF 并预览"
+              >
+                {convertingFormat === "pdf" ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <FileText className="w-3 h-3" />
+                )}
+                <span>{convertingFormat === "pdf" ? "转换中…" : "转存 PDF"}</span>
+              </button>
+            </>
+          )}
+
           {snapshots.length > 0 && (
             <button
               type="button"
@@ -281,43 +396,59 @@ export function PreviewPane() {
         </div>
       </header>
 
-      {/* 主体内容 */}
+      {/* 主体内容（面板级容错保护，防止异常文档渲染拖垮整个工作台） */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        {category === "excel" && <ExcelViewer path={activePreviewPath} bytes={bytes} />}
-        {category === "word" && <WordViewer bytes={bytes} />}
-        {category === "ppt" && <PptViewer bytes={bytes} />}
-        {category === "slides" && <SlidesViewer path={activePreviewPath} bytes={bytes} />}
-        {category === "pdf" && <PdfViewer bytes={bytes} />}
-        {(category === "markdown" || category === "code" || category === "text") && (
-          <TextCodeViewer path={activePreviewPath} bytes={bytes} category={category} />
-        )}
-        {category === "image" && imageUrl && (
-          <div className="h-full overflow-auto p-6 flex items-center justify-center bg-[var(--surface-paper)]">
-            <img
-              src={imageUrl}
-              alt={activePreviewPath}
-              className="max-w-full max-h-full rounded-md border border-[var(--border-hairline)] shadow-sm object-contain"
-            />
-          </div>
-        )}
-        {category === "binary" && (
-          <div className="h-full flex flex-col items-center justify-center p-6 text-center bg-[var(--surface-paper)]">
-            <div className="max-w-xs rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] p-5 space-y-3">
-              <File className="w-6 h-6 text-[var(--text-muted)] mx-auto stroke-[1.5]" />
-              <p className="text-xs text-[var(--text-secondary)] tabular-nums">
-                该文件类型不支持在线预览（{bytes.byteLength} 字节）。
-              </p>
-              <button
-                type="button"
-                onClick={() => exportWorkspaceFile(activePreviewPath)}
-                className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md border border-[var(--border-strong)] bg-[var(--bg-elevated)] hover:bg-[var(--bg-active)] text-xs font-medium text-[var(--text-primary)] transition-colors"
-              >
-                <Download className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
-                <span>导出到本地查看</span>
-              </button>
+        <ErrorBoundary
+          scope="panel"
+          title="文档预览渲染异常"
+          resetKey={`${activePreviewPath}-${previewRevision}`}
+          fallbackActions={
+            <button
+              type="button"
+              onClick={() => exportWorkspaceFile(activePreviewPath)}
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md border border-[var(--border-strong)] bg-[var(--bg-elevated)] hover:bg-[var(--bg-active)] text-xs font-medium text-[var(--text-primary)] transition-colors cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
+              <span>导出原文件</span>
+            </button>
+          }
+        >
+          {category === "excel" && <ExcelViewer path={activePreviewPath} bytes={bytes} />}
+          {category === "word" && <WordViewer bytes={bytes} />}
+          {category === "ppt" && <PptViewer bytes={bytes} />}
+          {category === "slides" && <SlidesViewer path={activePreviewPath} bytes={bytes} />}
+          {category === "pdf" && <PdfViewer bytes={bytes} />}
+          {(category === "markdown" || category === "code" || category === "text") && (
+            <TextCodeViewer path={activePreviewPath} bytes={bytes} category={category} />
+          )}
+          {category === "image" && imageUrl && (
+            <div className="h-full overflow-auto p-6 flex items-center justify-center bg-[var(--surface-paper)]">
+              <img
+                src={imageUrl}
+                alt={activePreviewPath}
+                className="max-w-full max-h-full rounded-md border border-[var(--border-hairline)] shadow-sm object-contain"
+              />
             </div>
-          </div>
-        )}
+          )}
+          {category === "binary" && (
+            <div className="h-full flex flex-col items-center justify-center p-6 text-center bg-[var(--surface-paper)]">
+              <div className="max-w-xs rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-surface)] p-5 space-y-3">
+                <File className="w-6 h-6 text-[var(--text-muted)] mx-auto stroke-[1.5]" />
+                <p className="text-xs text-[var(--text-secondary)] tabular-nums">
+                  该文件类型不支持在线预览（{bytes.byteLength} 字节）。
+                </p>
+                <button
+                  type="button"
+                  onClick={() => exportWorkspaceFile(activePreviewPath)}
+                  className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md border border-[var(--border-strong)] bg-[var(--bg-elevated)] hover:bg-[var(--bg-active)] text-xs font-medium text-[var(--text-primary)] transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
+                  <span>导出到本地查看</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </ErrorBoundary>
       </div>
     </div>
   );

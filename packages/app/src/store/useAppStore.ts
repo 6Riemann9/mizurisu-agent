@@ -221,12 +221,13 @@ export interface AppState {
   sendMessage: (
     text: string,
     attachmentPaths?: string[],
-    imageFiles?: File[]
+    imageFiles?: File[],
+    preloadedImages?: UiMessage["images"]
   ) => Promise<void>;
   regenerateMessage: (assistantMsgId: string) => Promise<void>;
   editAndResendMessage: (userMsgId: string, nextContent: string) => Promise<void>;
   branchFromMessage: (messageId: string) => Promise<void>;
-  abortRun: () => void;
+  abortRun: (options?: { discardResult?: boolean }) => void;
 
   refreshFiles: () => Promise<void>;
   uploadFilesToWorkspace: (fileList: File[] | FileList) => Promise<WorkspaceFileMeta[]>;
@@ -246,6 +247,8 @@ export interface AppState {
 
 let runnerSingleton: PiAgentRunner | null = null;
 let vfsUnsubscribe: (() => void) | null = null;
+let initPromise: Promise<void> | null = null;
+let fileListSeq = 0;
 const toastTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export const useAppStore = create<AppState>((set, get) => {
@@ -332,9 +335,17 @@ export const useAppStore = create<AppState>((set, get) => {
       createdAt: Date.now(),
     };
 
+    const titleSource =
+      params.text.trim() ||
+      (params.imagesMeta && params.imagesMeta.length > 0
+        ? `图片分析 (${params.imagesMeta[0].name || "图片"})`
+        : params.attachments && params.attachments.length > 0
+          ? `文件处理 (${params.attachments[0].name})`
+          : "新对话");
+
     const nextTitle =
       params.historyBefore.length === 0
-        ? params.text.slice(0, 22) + (params.text.length > 22 ? "..." : "")
+        ? titleSource.slice(0, 22) + (titleSource.length > 22 ? "..." : "")
         : params.session.title;
 
     const historyTokens = params.historyBefore.reduce(
@@ -403,175 +414,200 @@ export const useAppStore = create<AppState>((set, get) => {
 
     init: async () => {
       if (get().initialized) return;
+      if (initPromise) return initPromise;
 
-      const [savedConfig, savedSettings, savedAuthSession, savedSessions, savedSkills] =
-        await Promise.all([
-          kvGet<NewApiConfig>("newapi_config"),
-          kvGet<AppSettings>("app_settings"),
-          kvGet<AuthSession | null>("auth_session"),
-          loadAllSessions(),
-          dbListCustomSkills(),
-        ]);
-
-      const defaultsConfig = getDefaultConfig();
-      let config: NewApiConfig = {
-        ...defaultsConfig,
-        ...savedConfig,
-        baseUrl: savedConfig?.baseUrl?.trim() || defaultsConfig.baseUrl,
-        brandName:
-          savedConfig?.brandName?.trim() &&
-          savedConfig.brandName !== "PiDesk" &&
-          savedConfig.brandName !== "Mizurisu Agent"
-            ? savedConfig.brandName
-            : defaultsConfig.brandName,
-      };
-      const defaults = getDefaultSettings();
-      const settings: AppSettings = {
-        ...defaults,
-        ...savedSettings,
-        previewWidth:
-          typeof savedSettings?.previewWidth === "number" && savedSettings.previewWidth > 0
-            ? savedSettings.previewWidth
-            : defaults.previewWidth,
-      };
-      applyThemeToDocument(settings.theme);
-
-      let authSession: AuthSession | null = savedAuthSession ?? null;
-      // 兼容旧版本已保存 baseUrl + apiKey 但尚无 auth_session 记录的场景
-      if (savedAuthSession === undefined && config.baseUrl.trim() && config.apiKey.trim()) {
-        authSession = {
-          mode: "apikey",
-          baseUrl: normalizeNewApiBaseUrl(config.baseUrl),
-          tokens: [],
-          activeApiKey: normalizeApiKey(config.apiKey),
-          loggedInAt: Date.now(),
-        };
-      }
-
-      if (authSession && authSession.mode !== "guest") {
-        config = {
-          ...config,
-          baseUrl: authSession.baseUrl || config.baseUrl,
-          apiKey: authSession.activeApiKey || config.apiKey,
-        };
-      }
-
-      if (settings.mountedNativeDir) {
-        workspaceVfs.setMountedNativeDir(settings.mountedNativeDir);
-      }
-
-      await workspaceVfs.seedStarterWorkspaceIfEmpty();
-      const files = await workspaceVfs.listFiles();
-
-      let sessions = savedSessions;
-      if (sessions.length === 0) {
-        sessions = [createEmptySession()];
-        await saveSession(sessions[0]);
-      }
-
-      if (!vfsUnsubscribe) {
-        vfsUnsubscribe = workspaceVfs.subscribe((ev) => {
-          workspaceVfs.listFiles().then((nextFiles) => {
-            set((state) => ({
-              files: nextFiles,
-              previewRevision:
-                ev.path && ev.path === state.activePreviewPath
-                  ? state.previewRevision + 1
-                  : state.previewRevision,
-              activePreviewPath:
-                ev.type === "delete" && ev.path === state.activePreviewPath
-                  ? null
-                  : state.activePreviewPath,
-            }));
-          });
-        });
-      }
-
-      const starterPreview =
-        files.find((f) => f.path.endsWith(".xlsx"))?.path ?? files[0]?.path ?? null;
-
-      set({
-        initialized: true,
-        config,
-        settings,
-        authSession,
-        siteStatus: authSession?.siteStatus,
-        sessions,
-        activeSessionId: sessions[0].id,
-        files,
-        customSkills: savedSkills,
-        activePreviewPath: starterPreview,
-        previewOpen: Boolean(starterPreview),
-      });
-
-      const platform = getPlatformAdapter();
-
-      // 1. 优先处理从 Mizurisu / New-API 后台一键跳转携带的一次性 Key
-      if (typeof window !== "undefined") {
-        const urlAuth = extractAuthFromUrl(window.location.href);
-        if (urlAuth) {
-          try {
-            const cleanUrl = `${window.location.origin}${window.location.pathname}`;
-            window.history.replaceState({}, document.title, cleanUrl);
-          } catch {
-            // 忽略 history 替换限制
-          }
-          await get()
-            .loginWithApiKey(urlAuth.baseUrl || config.baseUrl, urlAuth.apiKey)
-            .catch(() => undefined);
-          return;
-        }
-      }
-
-      if (authSession && authSession.mode !== "guest") {
-        get().testConnectionAndSync().catch(() => undefined);
-        if (authSession.mode === "account") {
-          get()
-            .refreshAccountSession()
-            .catch(() => {
-              set({ authError: undefined });
-            });
-        }
-        return;
-      }
-
-      // 2. 未本地登录时：静默拉取站点元信息并探测浏览器同源会话（若已在站点登录则免二次登录直接进工作台）
-      if (!authSession && config.baseUrl.trim()) {
-        set({ checkingExistingSession: true });
+      initPromise = (async () => {
         try {
-          const [status, resumed] = await Promise.all([
-            fetchSiteStatus(config.baseUrl, platform).catch(() => undefined),
-            tryResumeExistingSession(config.baseUrl, platform).catch(() => null),
-          ]);
+          const [savedConfig, savedSettings, savedAuthSession, savedSessions, savedSkills] =
+            await Promise.all([
+              kvGet<NewApiConfig>("newapi_config"),
+              kvGet<AppSettings>("app_settings"),
+              kvGet<AuthSession | null>("auth_session"),
+              loadAllSessions(),
+              dbListCustomSkills(),
+            ]);
 
-          if (status) {
-            set({ siteStatus: status });
+          const defaultsConfig = getDefaultConfig();
+          let config: NewApiConfig = {
+            ...defaultsConfig,
+            ...savedConfig,
+            baseUrl: savedConfig?.baseUrl?.trim() || defaultsConfig.baseUrl,
+            brandName:
+              savedConfig?.brandName?.trim() &&
+              savedConfig.brandName !== "PiDesk" &&
+              savedConfig.brandName !== "Mizurisu Agent"
+                ? savedConfig.brandName
+                : defaultsConfig.brandName,
+          };
+          const defaults = getDefaultSettings();
+          const settings: AppSettings = {
+            ...defaults,
+            ...savedSettings,
+            previewWidth:
+              typeof savedSettings?.previewWidth === "number" && savedSettings.previewWidth > 0
+                ? savedSettings.previewWidth
+                : defaults.previewWidth,
+          };
+          applyThemeToDocument(settings.theme);
+
+          let authSession: AuthSession | null = savedAuthSession ?? null;
+          // 兼容旧版本已保存 baseUrl + apiKey 但尚无 auth_session 记录的场景
+          if (savedAuthSession === undefined && config.baseUrl.trim() && config.apiKey.trim()) {
+            authSession = {
+              mode: "apikey",
+              baseUrl: normalizeNewApiBaseUrl(config.baseUrl),
+              tokens: [],
+              activeApiKey: normalizeApiKey(config.apiKey),
+              loggedInAt: Date.now(),
+            };
           }
 
-          if (resumed) {
-            const nextConfig: NewApiConfig = {
-              ...get().config,
-              baseUrl: resumed.baseUrl,
-              apiKey: resumed.activeApiKey,
-              brandName: resumed.siteStatus?.systemName || get().config.brandName,
+          if (authSession && authSession.mode !== "guest") {
+            config = {
+              ...config,
+              baseUrl: authSession.baseUrl || config.baseUrl,
+              apiKey: authSession.activeApiKey || config.apiKey,
             };
-            await Promise.all([
-              kvSet("auth_session", resumed),
-              kvSet("newapi_config", nextConfig),
-            ]);
-            set({
-              authSession: resumed,
-              siteStatus: resumed.siteStatus ?? status,
-              config: nextConfig,
-              checkingExistingSession: false,
+          }
+
+          if (settings.mountedNativeDir) {
+            workspaceVfs.setMountedNativeDir(settings.mountedNativeDir);
+          }
+
+          await workspaceVfs.seedStarterWorkspaceIfEmpty();
+          const files = await workspaceVfs.listFiles();
+
+          let sessions = savedSessions;
+          if (sessions.length === 0) {
+            sessions = [createEmptySession()];
+            await saveSession(sessions[0]);
+          }
+
+          if (!vfsUnsubscribe) {
+            vfsUnsubscribe = workspaceVfs.subscribe((ev) => {
+              // 同步处理预览路径状态转换，消除 rename 期间异步刷新带来的闪烁与空态误清
+              if (ev.type === "rename" && ev.path && ev.previousPath) {
+                set((state) => {
+                  if (state.activePreviewPath !== ev.previousPath) return {};
+                  return {
+                    activePreviewPath: ev.path,
+                    previewRevision: state.previewRevision + 1,
+                  };
+                });
+              } else if (ev.type === "delete" && ev.path) {
+                set((state) => {
+                  if (state.activePreviewPath !== ev.path) return {};
+                  return { activePreviewPath: null };
+                });
+              } else if (ev.type === "write" && ev.path) {
+                set((state) => {
+                  if (state.activePreviewPath !== ev.path) return {};
+                  return { previewRevision: state.previewRevision + 1 };
+                });
+              }
+
+              const seq = ++fileListSeq;
+              workspaceVfs
+                .listFiles()
+                .then((nextFiles) => {
+                  if (seq !== fileListSeq) return;
+                  set({ files: nextFiles });
+                })
+                .catch(() => undefined);
             });
-            await get().testConnectionAndSync().catch(() => undefined);
+          }
+
+          const starterPreview =
+            files.find((f) => f.path.endsWith(".xlsx"))?.path ?? files[0]?.path ?? null;
+
+          set({
+            initialized: true,
+            config,
+            settings,
+            authSession,
+            siteStatus: authSession?.siteStatus,
+            sessions,
+            activeSessionId: sessions[0].id,
+            files,
+            customSkills: savedSkills,
+            activePreviewPath: starterPreview,
+            previewOpen: Boolean(starterPreview),
+          });
+
+          const platform = getPlatformAdapter();
+
+          // 1. 优先处理从 Mizurisu / New-API 后台一键跳转携带的一次性 Key
+          if (typeof window !== "undefined") {
+            const urlAuth = extractAuthFromUrl(window.location.href);
+            if (urlAuth) {
+              try {
+                const cleanUrl = `${window.location.origin}${window.location.pathname}`;
+                window.history.replaceState({}, document.title, cleanUrl);
+              } catch {
+                // 忽略 history 替换限制
+              }
+              await get()
+                .loginWithApiKey(urlAuth.baseUrl || config.baseUrl, urlAuth.apiKey)
+                .catch(() => undefined);
+              return;
+            }
+          }
+
+          if (authSession && authSession.mode !== "guest") {
+            get().testConnectionAndSync().catch(() => undefined);
+            if (authSession.mode === "account") {
+              get()
+                .refreshAccountSession()
+                .catch(() => {
+                  set({ authError: undefined });
+                });
+            }
             return;
           }
+
+          // 2. 未本地登录时：静默拉取站点元信息并探测浏览器同源会话（若已在站点登录则免二次登录直接进工作台）
+          if (!authSession && config.baseUrl.trim()) {
+            set({ checkingExistingSession: true });
+            try {
+              const [status, resumed] = await Promise.all([
+                fetchSiteStatus(config.baseUrl, platform).catch(() => undefined),
+                tryResumeExistingSession(config.baseUrl, platform).catch(() => null),
+              ]);
+
+              if (status) {
+                set({ siteStatus: status });
+              }
+
+              if (resumed) {
+                const nextConfig: NewApiConfig = {
+                  ...get().config,
+                  baseUrl: resumed.baseUrl,
+                  apiKey: resumed.activeApiKey,
+                  brandName: resumed.siteStatus?.systemName || get().config.brandName,
+                };
+                await Promise.all([
+                  kvSet("auth_session", resumed),
+                  kvSet("newapi_config", nextConfig),
+                ]);
+                set({
+                  authSession: resumed,
+                  siteStatus: resumed.siteStatus ?? status,
+                  config: nextConfig,
+                  checkingExistingSession: false,
+                });
+                await get().testConnectionAndSync().catch(() => undefined);
+                return;
+              }
+            } finally {
+              set({ checkingExistingSession: false });
+            }
+          }
         } finally {
-          set({ checkingExistingSession: false });
+          initPromise = null;
         }
-      }
+      })();
+
+      return initPromise;
     },
 
     setSettingsOpen: (open) => set({ settingsOpen: open }),
@@ -597,9 +633,22 @@ export const useAppStore = create<AppState>((set, get) => {
         get().dismissToast(id);
       }, 4000);
       toastTimers.set(id, timer);
-      set((state) => ({
-        toasts: [...state.toasts.slice(-4), { id, level, message }],
-      }));
+      set((state) => {
+        const combined = [...state.toasts, { id, level, message }];
+        if (combined.length > 4) {
+          const overflowCount = combined.length - 4;
+          const evicted = combined.slice(0, overflowCount);
+          for (const item of evicted) {
+            const staleTimer = toastTimers.get(item.id);
+            if (staleTimer) {
+              clearTimeout(staleTimer);
+              toastTimers.delete(item.id);
+            }
+          }
+          return { toasts: combined.slice(overflowCount) };
+        }
+        return { toasts: combined };
+      });
     },
 
     dismissToast: (id) => {
@@ -1099,7 +1148,7 @@ export const useAppStore = create<AppState>((set, get) => {
         get().activeSessionId === id &&
         (get().isStreaming || get().pendingApproval)
       ) {
-        get().abortRun();
+        get().abortRun({ discardResult: true });
       }
       await deleteSessionById(id);
       const remaining = get().sessions.filter((s) => s.id !== id);
@@ -1148,29 +1197,45 @@ export const useAppStore = create<AppState>((set, get) => {
       get().pushToast(`已导出对话记录：${filename}`, "success");
     },
 
-    sendMessage: async (text, attachmentPaths = [], imageFiles = []) => {
+    sendMessage: async (text, attachmentPaths = [], imageFiles = [], preloadedImages = []) => {
       const trimmed = text.trim();
-      if (!trimmed) return;
+      const hasText = trimmed.length > 0;
+      const hasAttachments = attachmentPaths.length > 0;
+      const hasImages = imageFiles.length > 0 || preloadedImages.length > 0;
+      if (!hasText && !hasAttachments && !hasImages) return;
 
       const runner = ensureRunner();
       const { activeSessionId, sessions, config } = get();
 
-      // 若正在生成且用户发送消息，触发 Pi 原生 steer 中途插话引导
+      // 若正在生成且用户发送消息，触发中途插话引导并持久化该条消息
       if (get().isStreaming && runner.isRunning()) {
+        const steerText =
+          trimmed ||
+          (hasImages
+            ? "请查看并分析我补充发送的图片内容。"
+            : "请读取并分析我补充附带的工作区文件。");
         const steerMsg: UiMessage = {
           id: `msg_${Date.now()}_steer`,
           role: "user",
-          content: `[中途补充引导] ${trimmed}`,
+          content: `[中途补充引导] ${steerText}`,
           createdAt: Date.now(),
         };
+        let updatedForSave: ChatSession | undefined;
         set((state) => ({
-          sessions: state.sessions.map((s) =>
-            s.id === activeSessionId
-              ? { ...s, messages: [...s.messages, steerMsg], updatedAt: Date.now() }
-              : s
-          ),
+          sessions: state.sessions.map((s) => {
+            if (s.id !== activeSessionId) return s;
+            updatedForSave = {
+              ...s,
+              messages: [...s.messages, steerMsg],
+              updatedAt: Date.now(),
+            };
+            return updatedForSave;
+          }),
         }));
-        runner.steer(trimmed);
+        if (updatedForSave) {
+          saveSession(updatedForSave).catch(() => undefined);
+        }
+        runner.steer(steerText);
         return;
       }
 
@@ -1184,6 +1249,15 @@ export const useAppStore = create<AppState>((set, get) => {
 
       const imagesMeta: NonNullable<UiMessage["images"]> = [];
       const imageContents: ImageContent[] = [];
+
+      for (const pre of preloadedImages) {
+        imagesMeta.push(pre);
+        const content = dataUrlToImageContent(pre);
+        if (content) {
+          imageContents.push(content);
+        }
+      }
+
       for (const img of imageFiles) {
         const dataUrl = await fileToDataUrl(img);
         const mimeType = img.type || "image/png";
@@ -1239,7 +1313,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (userIdx < 0) return;
 
       if (isStreaming || pendingApproval) {
-        get().abortRun();
+        get().abortRun({ discardResult: true });
       }
 
       const targetUserMsg = session.messages[userIdx];
@@ -1260,7 +1334,6 @@ export const useAppStore = create<AppState>((set, get) => {
 
     editAndResendMessage: async (userMsgId, nextContent) => {
       const trimmed = nextContent.trim();
-      if (!trimmed) return;
 
       const { activeSessionId, sessions, config, isStreaming, pendingApproval } = get();
       if (!config.baseUrl.trim() || !config.apiKey.trim()) {
@@ -1276,11 +1349,15 @@ export const useAppStore = create<AppState>((set, get) => {
         return;
       }
 
+      const targetUserMsg = session.messages[userIdx];
+      const hasMediaOrAttachment =
+        Boolean(targetUserMsg.attachments?.length) || Boolean(targetUserMsg.images?.length);
+      if (!trimmed && !hasMediaOrAttachment) return;
+
       if (isStreaming || pendingApproval) {
-        get().abortRun();
+        get().abortRun({ discardResult: true });
       }
 
-      const targetUserMsg = session.messages[userIdx];
       const historyBefore = session.messages.slice(0, userIdx);
       const imageContents = (targetUserMsg.images || [])
         .map(dataUrlToImageContent)
@@ -1299,7 +1376,7 @@ export const useAppStore = create<AppState>((set, get) => {
     branchFromMessage: async (messageId) => {
       const { activeSessionId, sessions, isStreaming, pendingApproval } = get();
       if (isStreaming || pendingApproval) {
-        get().abortRun();
+        get().abortRun({ discardResult: true });
       }
 
       const source = sessions.find((s) => s.id === activeSessionId);
@@ -1336,18 +1413,21 @@ export const useAppStore = create<AppState>((set, get) => {
       }
     },
 
-    abortRun: () => {
+    abortRun: (options) => {
       const pending = get().pendingApproval;
       if (pending) {
         pending.resolve(false);
       }
-      ensureRunner().abort();
+      ensureRunner().abort(options);
       set({ isStreaming: false, pendingApproval: null });
     },
 
     refreshFiles: async () => {
+      const seq = ++fileListSeq;
       const files = await workspaceVfs.listFiles();
-      set({ files });
+      if (seq === fileListSeq) {
+        set({ files });
+      }
     },
 
     uploadFilesToWorkspace: async (fileList) => {
@@ -1386,14 +1466,17 @@ export const useAppStore = create<AppState>((set, get) => {
         prevPreview !== null && (prevPreview === oldPath || prevPreview === normOld);
 
       const meta = await workspaceVfs.renameFile(oldPath, newPath);
+      const seq = ++fileListSeq;
       const files = await workspaceVfs.listFiles();
 
       set((state) => ({
-        files,
-        activePreviewPath: wasActivePreview ? meta.path : state.activePreviewPath,
-        previewRevision: wasActivePreview
-          ? state.previewRevision + 1
-          : state.previewRevision,
+        ...(seq === fileListSeq ? { files } : {}),
+        ...(wasActivePreview && state.activePreviewPath !== meta.path
+          ? {
+              activePreviewPath: meta.path,
+              previewRevision: state.previewRevision + 1,
+            }
+          : {}),
       }));
       get().pushToast(`已将文件重命名为 ${meta.path}`, "success");
     },
@@ -1462,18 +1545,29 @@ export const useAppStore = create<AppState>((set, get) => {
 
     resetAllData: async () => {
       if (get().isStreaming || get().pendingApproval) {
-        get().abortRun();
+        get().abortRun({ discardResult: true });
       }
+      initPromise = null;
       for (const timer of toastTimers.values()) {
         clearTimeout(timer);
       }
       toastTimers.clear();
+      // 先清空内存会话与流式状态，防止异步清库期间旧运行微任务回写数据
+      set({
+        isStreaming: false,
+        pendingApproval: null,
+        sessions: [],
+        activeSessionId: "",
+        toasts: [],
+      });
       await getPlatformAdapter().clearSessionCookies?.().catch(() => undefined);
       await clearAllLocalData();
       const fresh = createEmptySession();
       await saveSession(fresh);
       await workspaceVfs.seedStarterWorkspaceIfEmpty();
       const files = await workspaceVfs.listFiles();
+      const starterPreview =
+        files.find((f) => f.path.endsWith(".xlsx"))?.path ?? files[0]?.path ?? null;
       const defaultSettings = getDefaultSettings();
       applyThemeToDocument(defaultSettings.theme);
       set({
@@ -1495,7 +1589,8 @@ export const useAppStore = create<AppState>((set, get) => {
         files,
         customSkills: [],
         activeSkillId: undefined,
-        activePreviewPath: files[0]?.path ?? null,
+        activePreviewPath: starterPreview,
+        previewOpen: Boolean(starterPreview),
       });
     },
   };

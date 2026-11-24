@@ -245,9 +245,16 @@ export function uiMessagesToPiMessages(
       const imageNote = m.images?.length
         ? `\n\n[用户附带图片: ${m.images.map((img) => img.name || "image").join(", ")}]`
         : "";
+      const baseText = m.content.trim()
+        ? m.content
+        : m.images?.length
+          ? "请查看并分析我发送的图片内容。"
+          : m.attachments?.length
+            ? "请读取并分析我附带的工作区文件。"
+            : "";
       out.push({
         role: "user",
-        content: `${m.content}${attachNote}${imageNote}`,
+        content: `${baseText}${attachNote}${imageNote}`,
         timestamp: m.createdAt,
       });
     } else if (m.role === "assistant") {
@@ -306,7 +313,12 @@ export class PiAgentRunner {
     return Boolean(this.agent?.state.isStreaming);
   }
 
-  abort(): void {
+  abort(options?: { discardResult?: boolean }): void {
+    if (options?.discardResult === true) {
+      // 丢弃当前轮次后续状态通知，消除重发/删会话/重置期间的窄时间窗回写竞态
+      this.activeRunSeq = ++this.runSeq;
+      this.activeSessionId = null;
+    }
     this.agent?.abort();
   }
 
@@ -329,8 +341,18 @@ export class PiAgentRunner {
     activeSkill?: SkillTemplate;
     images?: ImageContent[];
   }): Promise<void> {
+    // 在任何异步等待前先抢占运行序号并中止旧运行，防止并发启动时状态串写
+    const runSeq = ++this.runSeq;
+    this.activeRunSeq = runSeq;
+    this.activeSessionId = options.sessionId;
+    this.agent?.abort();
+
     const platform = getPlatformAdapter();
     const files = await this.vfs.listFiles();
+    if (this.activeRunSeq !== runSeq) {
+      return;
+    }
+
     const modelInfo =
       options.models.find((m) => m.id === options.config.selectedModelId) ??
       inferModelMetadata(options.config.selectedModelId || "gpt-4o", options.config);
@@ -413,16 +435,13 @@ export class PiAgentRunner {
     };
 
     const emitUpdate = () => {
+      if (this.activeRunSeq !== runSeq) return;
       currentAssistant = {
         ...currentAssistant,
         toolCalls: [...toolMap.values()],
       };
       this.callbacks.onAssistantUpdate(options.sessionId, currentAssistant);
     };
-
-    const runSeq = ++this.runSeq;
-    this.activeRunSeq = runSeq;
-    this.activeSessionId = options.sessionId;
 
     const historyMessages = trimHistoryToBudget(
       uiMessagesToPiMessages(options.historyBeforeUser, piModel),
@@ -585,22 +604,28 @@ export class PiAgentRunner {
 
     try {
       emitUpdate();
+      const basePromptText = options.userMessage.content.trim()
+        ? options.userMessage.content
+        : options.images && options.images.length > 0
+          ? "请查看并分析我发送的图片内容。"
+          : "请读取并分析我附带的工作区文件。";
       const attachNote = options.userMessage.attachments?.length
         ? `\n\n[用户本次附带文件: ${options.userMessage.attachments.map((a) => a.path).join(", ")}]`
         : "";
-      await this.agent.prompt(`${options.userMessage.content}${attachNote}`, options.images);
+      await this.agent.prompt(`${basePromptText}${attachNote}`, options.images);
       await this.agent.waitForIdle();
     } catch (err) {
       currentAssistant.errorMessage = err instanceof Error ? err.message : String(err);
     } finally {
       unsubscribe();
       currentAssistant.isStreaming = false;
-      emitUpdate();
+      // 仅当仍是当前最新活跃轮次时才提交收尾更新与结束回调，避免已被新轮次取代的旧运行串写消息或提前关闭流式状态
       if (this.activeRunSeq === runSeq) {
+        emitUpdate();
         this.activeSessionId = null;
         this.agent = null;
+        this.callbacks.onRunFinished(options.sessionId);
       }
-      this.callbacks.onRunFinished(options.sessionId);
     }
   }
 }

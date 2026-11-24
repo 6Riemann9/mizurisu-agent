@@ -25,7 +25,13 @@ export function normalizeVfsPath(rawPath: string): string {
   return clean;
 }
 
-type VfsListener = (event: { type: "write" | "delete" | "sync"; path?: string }) => void;
+export interface VfsEvent {
+  type: "write" | "delete" | "sync" | "rename";
+  path?: string;
+  previousPath?: string;
+}
+
+type VfsListener = (event: VfsEvent) => void;
 
 export class WorkspaceVFS {
   private listeners = new Set<VfsListener>();
@@ -44,7 +50,7 @@ export class WorkspaceVFS {
     return () => this.listeners.delete(listener);
   }
 
-  private emit(event: { type: "write" | "delete" | "sync"; path?: string }): void {
+  private emit(event: VfsEvent): void {
     for (const l of this.listeners) {
       l(event);
     }
@@ -205,8 +211,8 @@ export class WorkspaceVFS {
       }
     }
 
-    this.emit({ type: "delete", path: oldPath });
-    this.emit({ type: "write", path: newPath });
+    // 仅发射单次原子 rename 事件，避免预览区因中间 delete 事件产生闪烁或异步竞态
+    this.emit({ type: "rename", path: newPath, previousPath: oldPath });
 
     const { data: _omit, ...meta } = newRecord;
     return meta;
@@ -277,7 +283,7 @@ export class WorkspaceVFS {
             "- 工作区已内置 `示例_季度销售数据.xlsx`，你可以直接在右侧表格预览、双击编辑，或让 Mizurisu Agent 读取分析并生成 Word 报告 / PPT 汇报。",
             "",
             "## 二、本周重点完成事项",
-            "1. 接入 New-API 多模型中转网关，支持自动拉取模型与余额查询。",
+            "1. 接入 Mizurisu / 多模型 AI 中转网关，支持自动拉取模型与余额查询。",
             "2. 打通 Word / Excel / PPT / PDF 纯本机客户端读写与实时预览闭环。",
             "",
             "## 三、下周计划",
