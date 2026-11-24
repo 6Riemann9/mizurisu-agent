@@ -108,6 +108,12 @@ describe("客户级运行时韧性、错误诊断与模型智能分类", () => {
     expect(server503.code).toBe("server");
     expect(server503.retryable).toBe(true);
 
+    const turnstileErr = classifyApiError("请求失败 (HTTP 400): Turnstile token is empty");
+    expect(turnstileErr.code).toBe("auth");
+    expect(turnstileErr.title).toContain("Turnstile");
+    expect(turnstileErr.suggestBillingConsole).toBe(true);
+    expect(turnstileErr.advice).not.toContain("切换模型");
+
     const unknown = classifyApiError("Unexpected parser hiccup");
     expect(unknown.code).toBe("unknown");
     expect(unknown.advice).toContain("Unexpected parser hiccup");

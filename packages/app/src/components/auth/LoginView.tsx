@@ -38,15 +38,29 @@ interface TurnstileApi {
   remove?: (widgetId: string) => void;
 }
 
-function isNonLocalHttpHost(): boolean {
+function canMountTurnstileOnCurrentHost(targetBaseUrl: string): boolean {
   if (typeof window === "undefined") return false;
   const { protocol, hostname } = window.location;
   if (protocol !== "https:" && protocol !== "http:") return false;
-  return (
-    hostname !== "localhost" &&
-    hostname !== "127.0.0.1" &&
-    hostname !== "[::1]"
-  );
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "[::1]" ||
+    hostname.endsWith(".localhost")
+  ) {
+    return false;
+  }
+  const cleanTarget = targetBaseUrl.trim();
+  if (!cleanTarget) return false;
+  try {
+    const parsed = new URL(
+      cleanTarget.startsWith("http") ? cleanTarget : `https://${cleanTarget}`
+    );
+    const stripWww = (h: string) => h.toLowerCase().replace(/^www\./, "");
+    return stripWww(hostname) === stripWww(parsed.hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function LoginView() {
@@ -75,24 +89,59 @@ export function LoginView() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [keyCleanHint, setKeyCleanHint] = useState<string | null>(null);
   const [turnstileToken, setTurnstileToken] = useState<string>("");
+  const [autoSwitchedHint, setAutoSwitchedHint] = useState(false);
 
   const turnstileBoxRef = useRef<HTMLDivElement>(null);
   const turnstileWidgetIdRef = useRef<string | null>(null);
+  const autoSwitchedForTurnstileRef = useRef(false);
 
   const errorMessage = localError || authError || null;
-  const consoleLinks = getMizurisuConsoleLinks(baseUrl || config.baseUrl);
+  const activeTargetUrl = baseUrl || config.baseUrl || DEFAULT_NEWAPI_URL;
+  const consoleLinks = getMizurisuConsoleLinks(activeTargetUrl);
   const diagnosis = errorMessage
-    ? classifyApiError(errorMessage, baseUrl || config.baseUrl)
+    ? classifyApiError(errorMessage, activeTargetUrl)
     : null;
   const maskedKeyDetected = mode === "apikey" && isMaskedKey(apiKey);
+  const sameAsStationStatusTarget = (() => {
+    try {
+      const a = new URL(
+        activeTargetUrl.startsWith("http") ? activeTargetUrl : `https://${activeTargetUrl}`
+      );
+      const bUrl = config.baseUrl || DEFAULT_NEWAPI_URL;
+      const b = new URL(bUrl.startsWith("http") ? bUrl : `https://${bUrl}`);
+      return a.host.toLowerCase() === b.host.toLowerCase();
+    } catch {
+      return true;
+    }
+  })();
+  const hostSupportsTurnstile = canMountTurnstileOnCurrentHost(activeTargetUrl);
+  const turnstileUnsupportedHere = Boolean(
+    sameAsStationStatusTarget && siteStatus?.turnstileCheck && !hostSupportsTurnstile
+  );
   const shouldMountTurnstile =
     mode === "account" &&
     Boolean(siteStatus?.turnstileCheck && siteStatus?.turnstileSiteKey) &&
-    isNonLocalHttpHost();
+    hostSupportsTurnstile;
 
   const isTurnstileBlocked = Boolean(
-    errorMessage && /turnstile|人机|验证码|校验/i.test(errorMessage)
+    errorMessage && /turnstile|captcha|人机|验证码|校验/i.test(errorMessage)
   );
+
+  // 探测到站点启用 Turnstile 且当前宿主（如 localhost/桌面端/异域）无法挂载校验时，
+  // 首次自动切至 API Key 直连模式，避免用户打开即撞上 Turnstile token is empty 报错
+  useEffect(() => {
+    if (
+      turnstileUnsupportedHere &&
+      !autoSwitchedForTurnstileRef.current &&
+      mode === "account" &&
+      !username &&
+      !password
+    ) {
+      autoSwitchedForTurnstileRef.current = true;
+      setMode("apikey");
+      setAutoSwitchedHint(true);
+    }
+  }, [turnstileUnsupportedHere, mode, username, password]);
 
   useEffect(() => {
     if (!shouldMountTurnstile || !siteStatus?.turnstileSiteKey) {
@@ -421,9 +470,43 @@ export function LoginView() {
                   <div ref={turnstileBoxRef} />
                 </div>
               )}
+
+              {turnstileUnsupportedHere && !isTurnstileBlocked && (
+                <div className="px-3 py-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[11.5px] text-[var(--text-secondary)] leading-relaxed space-y-1.5">
+                  <p>
+                    当前站点已开启域名人机校验（Turnstile），本地/桌面或异域环境无法直接提交账号密码。建议前往控制台复制 Key 并改用直连：
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3 text-[11px]">
+                    <a
+                      href={consoleLinks.tokenUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline"
+                    >
+                      <span>前往控制台复制 Key</span>
+                      <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode("apikey");
+                        setLocalError(null);
+                      }}
+                      className="text-[var(--text-primary)] underline cursor-pointer"
+                    >
+                      改用 API Key 直连
+                    </button>
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             <div className="space-y-1.5">
+              {autoSwitchedHint && turnstileUnsupportedHere && (
+                <div className="px-2.5 py-1.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                  已检测到当前站点开启域名人机校验，已默认切换至「API Key 直连」（部署于站点同域名下可自动复用网页登录态免登）。
+                </div>
+              )}
               <div className="flex flex-wrap items-center justify-between gap-1.5">
                 <label className="text-[11px] font-medium text-[var(--text-secondary)]">
                   API Key

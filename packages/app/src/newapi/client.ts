@@ -669,6 +669,18 @@ export function getMizurisuConsoleLinks(baseUrl?: string): MizurisuConsoleLinks 
 export function classifyApiError(rawError: string, baseUrl?: string): ApiErrorDiagnosis {
   const text = (rawError || "").trim();
 
+  // 0. 人机校验 / Cloudflare Turnstile（常见于本地 localhost、桌面端或异域账号直登）
+  if (/(?:turnstile|captcha|人机校验|人机验证|验证码)/i.test(text)) {
+    return {
+      code: "auth",
+      title: "当前站点需要域名人机校验 (Turnstile)",
+      advice:
+        "该站点已开启 Cloudflare Turnstile 域名人机校验，本地预览、桌面端或异域访问无法通过账号密码直登。请前往站点控制台复制 API Key 后切换「API Key 直连」，或将本应用同源部署至站点域名下即可自动免登。",
+      retryable: false,
+      suggestBillingConsole: true,
+    };
+  }
+
   // 1. 优先识别额度耗尽（部分中转站会在 403/429 下返回 insufficient_quota 或中文余额不足提示）
   if (
     /(?:\b402\b|insufficient_quota|quota[_\s-]?(?:exceeded|exhausted|not[_\s-]?enough|insufficient)|余额不足|额度不足|额度已用尽|额度耗尽|欠费|\bquota\b)/i.test(
