@@ -1,4 +1,7 @@
 import { exportToPptx } from "dom-to-pptx";
+import { sanitizeSlideHtml } from "./slides-sanitize";
+
+export { sanitizeSlideHtml } from "./slides-sanitize";
 
 export type SlideThemeId =
   | "linear-dark"
@@ -854,9 +857,7 @@ function decodeHtmlEntities(value: string): string {
 }
 
 function sanitizeSlideHtmlForDom(html: string): string {
-  return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+  return sanitizeSlideHtml(html);
 }
 
 function stripClosingStyleTag(css: string): string {
@@ -894,7 +895,7 @@ export function buildSlidesHtmlDocument(spec: SlideDeckSpec): string {
       const notesAttr = slide.notes
         ? ` data-notes="${escapeHtmlAttr(slide.notes)}"`
         : ` data-notes=""`;
-      const inner = extractInnerSlideMarkup(slide.html || "");
+      const inner = sanitizeSlideHtml(extractInnerSlideMarkup(slide.html || ""));
       return [
         `    <section class="slide" data-slide-index="${slideNum}" data-title="${escapeHtmlAttr(slideTitle)}"${notesAttr} style="width: 1280px; height: 720px; position: relative; overflow: hidden;">`,
         inner,
@@ -1047,7 +1048,7 @@ export function parseSlidesHtmlWithRegex(html: string): SlideDeckSpec {
     return {
       title: slideTitle,
       notes: notesRaw && notesRaw.length > 0 ? notesRaw : undefined,
-      html: blk.innerHtml,
+      html: sanitizeSlideHtml(blk.innerHtml),
     };
   });
 
@@ -1125,7 +1126,7 @@ export function parseSlidesHtmlDocument(html: string): SlideDeckSpec {
       return {
         title: attrTitle || headingTitle || `第 ${idx + 1} 页`,
         notes: notesAttr && notesAttr.length > 0 ? notesAttr : undefined,
-        html: el.innerHTML.trim(),
+        html: sanitizeSlideHtml(el.innerHTML.trim()),
       };
     });
 
@@ -1163,7 +1164,7 @@ export function updateSlideInHtmlDocument(
   deck.slides[slideIndex - 1] = {
     title: patch.title !== undefined ? patch.title : target.title,
     notes: patch.notes !== undefined ? patch.notes : target.notes,
-    html: patch.html !== undefined ? patch.html : target.html,
+    html: sanitizeSlideHtml(patch.html !== undefined ? patch.html : target.html),
   };
 
   return buildSlidesHtmlDocument(deck);

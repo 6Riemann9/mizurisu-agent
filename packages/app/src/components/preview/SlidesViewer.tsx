@@ -19,6 +19,7 @@ import {
   exportHtmlSlidesToPptxBytes,
   getSlideThemeStyles,
   parseSlidesHtmlDocument,
+  sanitizeSlideHtml,
   switchSlidesHtmlTheme,
   updateSlideInHtmlDocument,
   validateSlidesHtml,
@@ -210,12 +211,13 @@ export function SlidesViewer({
   const totalSlides = deck.slides.length;
   const currentSlide = deck.slides[currentIdx];
 
-  // 同步当前幻灯片 DOM 内容（处于 inline 编辑时不覆盖用户光标与选区）
+  // 同步当前幻灯片 DOM 内容（处于 inline 编辑时不覆盖用户光标与选区，并强制经安全清洗）
   useEffect(() => {
     const el = slideSectionRef.current;
     if (!el || isEditingSlide || !currentSlide) return;
-    if (el.innerHTML !== currentSlide.html) {
-      el.innerHTML = currentSlide.html;
+    const safeHtml = sanitizeSlideHtml(currentSlide.html);
+    if (el.innerHTML !== safeHtml) {
+      el.innerHTML = safeHtml;
     }
   }, [currentSlide, isEditingSlide, viewMode, currentIdx]);
 
@@ -262,12 +264,13 @@ export function SlidesViewer({
   const commitInlineSlideEdit = useCallback(
     async (nextInnerHtml: string): Promise<string> => {
       setIsEditingSlide(false);
+      const safeNextHtml = sanitizeSlideHtml(nextInnerHtml);
       const slide = deck.slides[currentIdx];
-      if (!slide || nextInnerHtml === slide.html) return htmlText;
+      if (!slide || safeNextHtml === slide.html) return htmlText;
       try {
         setActionError(null);
         const nextDoc = updateSlideInHtmlDocument(htmlText, currentIdx + 1, {
-          html: nextInnerHtml,
+          html: safeNextHtml,
         });
         await workspaceVfs.writeText(path, nextDoc, {
           snapshotNote: `双击改字：第 ${currentIdx + 1} 页`,
@@ -914,7 +917,7 @@ export function SlidesViewer({
                           position: "relative",
                           overflow: "hidden",
                         }}
-                        dangerouslySetInnerHTML={{ __html: slide.html }}
+                        dangerouslySetInnerHTML={{ __html: sanitizeSlideHtml(slide.html) }}
                       />
                     </div>
                     <span
@@ -1005,7 +1008,7 @@ export function SlidesViewer({
                   position: "relative",
                   overflow: "hidden",
                 }}
-                dangerouslySetInnerHTML={{ __html: currentSlide.html }}
+                dangerouslySetInnerHTML={{ __html: sanitizeSlideHtml(currentSlide.html) }}
               />
             </div>
           </div>
