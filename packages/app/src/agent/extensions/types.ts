@@ -9,6 +9,7 @@ import type {
   MessageUsage,
   ModelInfo,
   NewApiConfig,
+  PermissionMode,
   QuestionnaireRequest,
   TodoItem,
 } from "../../types";
@@ -18,6 +19,8 @@ export interface ExtensionRuntimeContext {
   vfs: WorkspaceVFS;
   config: NewApiConfig;
   settings: AppSettings;
+  permissionMode?: PermissionMode;
+  sessionAllowedTools?: ReadonlySet<string>;
   model: Model<Api>;
   modelInfo?: ModelInfo;
   models: ModelInfo[];

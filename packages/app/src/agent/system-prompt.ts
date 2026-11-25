@@ -1,7 +1,7 @@
-import type { PlatformKind, SkillTemplate, WorkspaceFileMeta } from "../types";
+import type { PermissionMode, PlatformKind, SkillTemplate, WorkspaceFileMeta } from "../types";
 
 /**
- * 构建发送给智能办公助手的全局系统提示词，注入工作区文件、激活技能与客户自定义偏好
+ * 构建发送给智能办公助手的全局系统提示词，注入工作区文件、激活技能、项目规范与执行模式约束
  */
 export function buildSystemPrompt(options: {
   brandName: string;
@@ -10,6 +10,8 @@ export function buildSystemPrompt(options: {
   activeSkill?: SkillTemplate;
   customSystemPrompt?: string;
   extensionHints?: string[];
+  permissionMode?: PermissionMode;
+  projectInstructions?: { path: string; content: string } | null;
 }): string {
   const fileList =
     options.files.length === 0
@@ -21,6 +23,15 @@ export function buildSystemPrompt(options: {
   const skillSection = options.activeSkill
     ? `\n## 当前激活技能（${options.activeSkill.name}）\n${options.activeSkill.systemHint}\n`
     : "";
+
+  const projectInstructionSection = options.projectInstructions?.content?.trim()
+    ? `\n## 工作区项目规范（自动加载自 ${options.projectInstructions.path}）\n${options.projectInstructions.content.trim()}\n`
+    : "";
+
+  const planModeSection =
+    options.permissionMode === "plan"
+      ? `\n## 当前运行模式：Plan（只读规划模式 · 严禁写入）\n- 您当前处于 **Plan 只读规划模式**，系统已硬性拦截所有创建/修改/删除文件、Shell 命令与外部写入操作。\n- 请仅使用只读工具（如 \`list_files\`、\`read_text_file\`、\`excel_inspect\`、\`excel_read_sheet\`、\`word_read\`、\`pdf_read\`、\`slides_read\`、\`ppt_read\` 等）充分调研现状。\n- 然后向用户输出结构化的 **实施规划方案**（包含：① 现状与问题诊断 ② 分步骤执行计划 ③ 预计新增/修改的文件清单与关键结构设计 ④ 潜在风险或待确认口径）。\n- 请在方案结尾提示用户：如认可此方案，可直接点击下方「批准并开始执行」按钮自动切回执行模式并落地改动。\n`
+      : "";
 
   const customPreferenceSection = options.customSystemPrompt?.trim()
     ? `\n## 客户自定义办公偏好\n${options.customSystemPrompt.trim()}\n`
@@ -58,7 +69,7 @@ export function buildSystemPrompt(options: {
 ${desktopHint}
 5. **交付反馈**：生成或更新文件后，明确告知用户文件路径与关键改动摘要；系统会自动在预览面板打开最新修改的文档。
 6. **语言**：默认使用清晰简洁的简体中文回复（除非用户要求其他语言）。
-${skillSection}${customPreferenceSection}${extensionSection}
+${planModeSection}${projectInstructionSection}${skillSection}${customPreferenceSection}${extensionSection}
 ## 当前工作区文件清单
 ${fileList}
 `;

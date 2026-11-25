@@ -77,6 +77,7 @@ export const questionnaireExtension: MizurisuExtension = {
 
           runtimeCtx.requestQuestionnaire?.({
             id: toolCallId,
+            sessionId: runtimeCtx.sessionId,
             title: params.title?.trim() || "请补充确认以下细节",
             questions,
             resolve: safeResolve,

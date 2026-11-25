@@ -224,12 +224,12 @@ describe("M3: Remote MCP 按需代理、多工作区隔离与版本更新检查"
     const mockFetch: typeof fetch = async () =>
       new Response(
         JSON.stringify({
-          tag_name: "v0.2.0",
-          html_url: "https://github.com/6Riemann9/mizurisu-agent/releases/tag/v0.2.0",
+          tag_name: "v9.9.0",
+          html_url: "https://github.com/6Riemann9/mizurisu-agent/releases/tag/v9.9.0",
           body: "新增 M0-M3 插件体系",
           assets: [
             {
-              name: "Mizurisu Agent_0.2.0_x64-setup.exe",
+              name: "Mizurisu Agent_9.9.0_x64-setup.exe",
               browser_download_url: "https://example.com/setup.exe",
             },
           ],
@@ -239,7 +239,7 @@ describe("M3: Remote MCP 按需代理、多工作区隔离与版本更新检查"
 
     const info = await checkLatestRelease(mockFetch, APP_VERSION);
     expect(info.hasUpdate).toBe(true);
-    expect(info.latestVersion).toBe("0.2.0");
+    expect(info.latestVersion).toBe("9.9.0");
     expect(info.message).toContain("发现新版本");
   });
 });

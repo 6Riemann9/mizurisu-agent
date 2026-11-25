@@ -37,6 +37,7 @@ export interface GlobalShortcutHandlers {
   onFocusComposer: () => void;
   onToggleShortcutHelp: () => void;
   onOpenSettings: () => void;
+  onCyclePermissionMode?: () => void;
 }
 
 /**
@@ -62,6 +63,22 @@ export function useGlobalShortcuts(handlers: GlobalShortcutHandlers): void {
           e.preventDefault();
           current.onOpenSettings();
         }
+        return;
+      }
+
+      // Shift + Tab 全局循环切换执行权限模式（非输入框焦点时同样响应）
+      if (
+        e.key === "Tab" &&
+        e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !current.modalOpen &&
+        !isEditableTarget(e.target) &&
+        current.onCyclePermissionMode
+      ) {
+        e.preventDefault();
+        current.onCyclePermissionMode();
         return;
       }
 

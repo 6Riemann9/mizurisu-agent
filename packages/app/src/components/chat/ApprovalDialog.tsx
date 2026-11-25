@@ -1,9 +1,14 @@
-import { ShieldAlert } from "lucide-react";
+import { ShieldAlert, ShieldCheck } from "lucide-react";
 import { useAppStore } from "../../store/useAppStore";
 import { Button, Dialog } from "../ui";
 
 export function ApprovalDialog() {
-  const { pendingApproval, resolveApproval } = useAppStore();
+  const { pendingApproval, resolveApproval, sessions, activeSessionId } = useAppStore();
+
+  const sourceSessionTitle =
+    pendingApproval?.sessionId && pendingApproval.sessionId !== activeSessionId
+      ? sessions.find((s) => s.id === pendingApproval.sessionId)?.title
+      : undefined;
 
   return (
     <Dialog
@@ -19,12 +24,13 @@ export function ApprovalDialog() {
             <div className="w-8 h-8 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-elevated)] text-[var(--status-warning)] flex items-center justify-center shrink-0">
               <ShieldAlert className="w-4 h-4" />
             </div>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <h3 className="text-[13px] font-linear-semibold text-[var(--text-primary)] truncate">
                 {pendingApproval.title}
               </h3>
               <p className="text-[11px] font-mono text-[var(--text-muted)] truncate">
                 {pendingApproval.toolName}
+                {sourceSessionTitle ? ` · ${sourceSessionTitle}` : ""}
               </p>
             </div>
           </div>
@@ -38,7 +44,7 @@ export function ApprovalDialog() {
             </pre>
           </div>
 
-          <div className="px-4 py-2.5 bg-[var(--bg-sidebar)] border-t border-[var(--border-hairline)] flex items-center justify-end gap-2">
+          <div className="px-4 py-2.5 bg-[var(--bg-sidebar)] border-t border-[var(--border-hairline)] flex flex-wrap items-center justify-end gap-2">
             <Button
               variant="secondary"
               size="md"
@@ -47,13 +53,24 @@ export function ApprovalDialog() {
             >
               拒绝
             </Button>
+            {pendingApproval.allowSessionToolOption && (
+              <Button
+                variant="secondary"
+                size="md"
+                onClick={() => resolveApproval(true, { rememberForSession: true })}
+                className="text-[12px] border-[var(--accent)]/40 text-[var(--accent)] hover:bg-[var(--accent-soft)]"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>本会话始终允许</span>
+              </Button>
+            )}
             <Button
               variant="primary"
               size="md"
               onClick={() => resolveApproval(true)}
               className="text-[12px]"
             >
-              允许执行
+              允许本次
             </Button>
           </div>
         </>

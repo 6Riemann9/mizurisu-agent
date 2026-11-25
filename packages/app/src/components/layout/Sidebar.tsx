@@ -15,8 +15,10 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  ScrollText,
   Search,
   Settings,
+  ShieldAlert,
   Trash2,
   Unlock,
   Upload,
@@ -76,6 +78,11 @@ export function Sidebar({
     authBusy,
     sessions,
     activeSessionId,
+    runningSessionIds,
+    unreadCompletedSessionIds,
+    pendingApprovalsBySession,
+    pendingQuestionnairesBySession,
+    projectInstructionPath,
     files,
     activePreviewPath,
     customSkills,
@@ -86,6 +93,7 @@ export function Sidebar({
     renameSession,
     exportSessionMarkdown,
     openPreview,
+    openOrCreateProjectInstructions,
     uploadFilesToWorkspace,
     deleteWorkspaceFile,
     renameWorkspaceFile,
@@ -901,6 +909,37 @@ export function Sidebar({
 
           {filesOpen && (
             <div className="mt-1 space-y-1">
+              <div className="px-1">
+                <Tooltip
+                  content={
+                    projectInstructionPath
+                      ? `每次对话自动加载此规范文件 (${projectInstructionPath})，点击编辑`
+                      : "创建 MIZURISU.md，每次对话自动加载项目口径与约束"
+                  }
+                  side="right"
+                >
+                  <button
+                    type="button"
+                    onClick={() => void openOrCreateProjectInstructions()}
+                    className={cn(
+                      "w-full h-6 px-2 rounded-[5px] flex items-center justify-between gap-1.5 text-[11px] transition cursor-pointer border",
+                      projectInstructionPath
+                        ? "border-[var(--accent)]/30 bg-[var(--accent-soft)]/50 text-[var(--accent)] hover:bg-[var(--accent-soft)]"
+                        : "border-transparent bg-[var(--surface-subtle)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                    )}
+                  >
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <ScrollText className="w-3 h-3 shrink-0" />
+                      <span className="truncate font-mono">
+                        {projectInstructionPath || "MIZURISU.md"}
+                      </span>
+                    </span>
+                    <span className="text-[9.5px] shrink-0">
+                      {projectInstructionPath ? "规范已加载" : "+ 新建规范"}
+                    </span>
+                  </button>
+                </Tooltip>
+              </div>
               {files.length > 0 && (
                 <div className="px-1">
                   {/* 降低搜索框常态存在感，仅在悬停或聚焦时显现细边框 */}
@@ -1250,18 +1289,46 @@ export function Sidebar({
                       active ? listRowActiveClass : listRowIdleClass
                     )}
                   >
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <MessageSquare
-                        className={cn(
-                          "w-3.5 h-3.5 shrink-0",
-                          active ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"
-                        )}
-                      />
-                      <span className="truncate">{s.title}</span>
-                    </div>
-                    <span className="hidden md:inline text-[10px] text-[var(--text-muted)] tabular-nums shrink-0 md:group-hover:hidden md:group-focus-within:hidden">
-                      {s.messages.length}
-                    </span>
+                    {(() => {
+                      const isWaiting = Boolean(
+                        pendingApprovalsBySession[s.id] || pendingQuestionnairesBySession[s.id]
+                      );
+                      const isRunning = Boolean(runningSessionIds[s.id]);
+                      const isUnreadDone = Boolean(unreadCompletedSessionIds[s.id]);
+                      return (
+                        <>
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            {isWaiting ? (
+                              <ShieldAlert className="w-3.5 h-3.5 text-[var(--status-warning)] animate-pulse shrink-0" />
+                            ) : isRunning ? (
+                              <Loader2 className="w-3.5 h-3.5 text-[var(--accent)] animate-spin shrink-0" />
+                            ) : (
+                              <MessageSquare
+                                className={cn(
+                                  "w-3.5 h-3.5 shrink-0",
+                                  active ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"
+                                )}
+                              />
+                            )}
+                            <span className="truncate">{s.title}</span>
+                          </div>
+                          <span className="hidden md:inline-flex items-center gap-1 text-[10px] text-[var(--text-muted)] tabular-nums shrink-0 md:group-hover:hidden md:group-focus-within:hidden">
+                            {isWaiting ? (
+                              <span className="px-1 py-px rounded bg-[var(--status-warning)]/15 text-[var(--status-warning)] text-[9.5px]">
+                                待批
+                              </span>
+                            ) : isUnreadDone ? (
+                              <span
+                                aria-label="后台已完成"
+                                className="w-2 h-2 rounded-full bg-[var(--status-success)]"
+                              />
+                            ) : (
+                              s.messages.length
+                            )}
+                          </span>
+                        </>
+                      );
+                    })()}
                     <div className="flex md:hidden md:group-hover:flex md:group-focus-within:flex items-center gap-0.5 shrink-0">
                       <Tooltip content="重命名会话" side="top">
                         <Button

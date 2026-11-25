@@ -1,6 +1,12 @@
-import type { ImageContent } from "@earendil-works/pi-ai";
+import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { create } from "zustand";
 import { buildHandoffFromSession } from "../agent/extensions";
+import { cyclePermissionMode as cycleModeHelper } from "../agent/permission";
+import {
+  DEFAULT_MIZURISU_MD_TEMPLATE,
+  findProjectInstructionFile,
+} from "../agent/project-instructions";
 import { PiAgentRunner } from "../agent/runtime";
 import { parseSkillMarkdown } from "../agent/skill-md";
 import { BUILTIN_SKILLS } from "../agent/skills";
@@ -24,9 +30,12 @@ import {
   DEFAULT_NEWAPI_URL,
   fetchNewApiBilling,
   fetchNewApiModels,
+  inferModelMetadata,
   normalizeNewApiBaseUrl,
   pickDefaultStationModel,
+  toPiModel,
 } from "../newapi/client";
+import { createNewApiStreamFn } from "../newapi/stream";
 import { detectFileCategory, inferMimeType } from "../office";
 import { createWorkspaceZip, formatSessionToMarkdown } from "../office/export-bundle";
 import { getPlatformAdapter } from "../platform";
@@ -53,7 +62,10 @@ import type {
   NewApiConfig,
   NewApiSiteStatus,
   NewApiTokenItem,
+  PermissionMode,
+  QueuedMessageItem,
   QuestionnaireRequest,
+  SessionFileChange,
   SkillTemplate,
   ToastAction,
   ToastItem,
@@ -86,6 +98,7 @@ function getDefaultSettings(): AppSettings {
     theme: "dark",
     highContrast: false,
     autoApproveDelete: false,
+    permissionMode: "auto-edits",
     previewWidth: 520,
     favoriteModels: [],
     showNonChatModels: false,
@@ -189,6 +202,14 @@ export interface AppState {
   sessions: ChatSession[];
   activeSessionId: string;
   isStreaming: boolean;
+  runningSessionIds: Record<string, boolean>;
+  unreadCompletedSessionIds: Record<string, boolean>;
+  pendingApprovalsBySession: Record<string, ApprovalRequest>;
+  pendingQuestionnairesBySession: Record<string, QuestionnaireRequest>;
+  sessionAllowedTools: Record<string, string[]>;
+  queuedMessagesBySession: Record<string, QueuedMessageItem[]>;
+  diffReviewOpen: boolean;
+  projectInstructionPath: string | null;
   files: WorkspaceFileMeta[];
   activePreviewPath: string | null;
   previewRevision: number;
@@ -262,7 +283,21 @@ export interface AppState {
   regenerateMessage: (assistantMsgId: string) => Promise<void>;
   editAndResendMessage: (userMsgId: string, nextContent: string) => Promise<void>;
   branchFromMessage: (messageId: string) => Promise<void>;
-  abortRun: (options?: { discardResult?: boolean }) => void;
+  abortRun: (options?: { discardResult?: boolean; sessionId?: string }) => void;
+
+  setPermissionMode: (mode: PermissionMode) => Promise<void>;
+  cyclePermissionMode: () => Promise<PermissionMode>;
+  approvePlanAndExecute: (sessionId?: string) => Promise<void>;
+  setDiffReviewOpen: (open: boolean) => void;
+  acceptSessionFileChange: (path: string) => Promise<void>;
+  acceptAllSessionFileChanges: () => Promise<void>;
+  revertSessionFileChange: (path: string) => Promise<void>;
+  revertAllSessionFileChanges: () => Promise<void>;
+  enqueueMessage: (text: string, attachmentPaths?: string[]) => void;
+  removeQueuedMessage: (id: string, sessionId?: string) => void;
+  sendQueuedMessageNow: (id: string, sessionId?: string) => Promise<void>;
+  compactActiveSession: () => Promise<void>;
+  openOrCreateProjectInstructions: () => Promise<void>;
 
   refreshFiles: () => Promise<void>;
   uploadFilesToWorkspace: (fileList: File[] | FileList) => Promise<WorkspaceFileMeta[]>;
@@ -281,7 +316,10 @@ export interface AppState {
   deleteCustomSkill: (id: string) => Promise<void>;
   importSkillMarkdown: (rawMarkdown: string, fallbackName?: string) => Promise<SkillTemplate>;
 
-  resolveApproval: (approved: boolean) => void;
+  resolveApproval: (
+    approved: boolean,
+    options?: { rememberForSession?: boolean }
+  ) => void;
   resolveQuestionnaire: (answers: Record<string, string[]> | null) => void;
   togglePlugin: (pluginId: string, enabled: boolean) => Promise<void>;
   toggleProtectedPath: (path: string) => Promise<boolean>;
@@ -290,12 +328,48 @@ export interface AppState {
   resetAllData: () => Promise<void>;
 }
 
-let runnerSingleton: PiAgentRunner | null = null;
+const sessionRunners = new Map<string, PiAgentRunner>();
+const manuallyAbortedSessions = new Set<string>();
 let vfsUnsubscribe: (() => void) | null = null;
 let nativeWatchStop: (() => void) | null = null;
 let initPromise: Promise<void> | null = null;
 let fileListSeq = 0;
 const toastTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function mergeSessionFileChanges(
+  existing: SessionFileChange[] | undefined,
+  incoming: SessionFileChange
+): SessionFileChange[] {
+  const list = existing ? [...existing] : [];
+  const idx = list.findIndex((item) => item.path === incoming.path);
+  if (idx < 0) {
+    list.push(incoming);
+    return list;
+  }
+  const prev = list[idx];
+  // 同会话先创建后删除且未撤销，等于净零变动，直接移除记录
+  if (prev.reviewed !== "reverted" && prev.action === "created" && incoming.action === "deleted") {
+    list.splice(idx, 1);
+    return list;
+  }
+  const keepBaseline = prev.reviewed !== "reverted";
+  list[idx] = {
+    path: incoming.path,
+    action:
+      keepBaseline && prev.action === "created" && incoming.action !== "deleted"
+        ? "created"
+        : incoming.action,
+    toolName: incoming.toolName,
+    summary: incoming.summary || prev.summary,
+    beforeSnapshotId: keepBaseline
+      ? prev.beforeSnapshotId ?? incoming.beforeSnapshotId
+      : incoming.beforeSnapshotId,
+    existedBefore: keepBaseline ? prev.existedBefore : incoming.existedBefore,
+    updatedAt: incoming.updatedAt,
+    reviewed: undefined,
+  };
+  return list;
+}
 
 async function syncNativeDirWatcher(nativeDir?: string): Promise<void> {
   if (nativeWatchStop) {
@@ -318,9 +392,11 @@ async function syncNativeDirWatcher(nativeDir?: string): Promise<void> {
 }
 
 export const useAppStore = create<AppState>((set, get) => {
-  const ensureRunner = (): PiAgentRunner => {
-    if (runnerSingleton) return runnerSingleton;
-    runnerSingleton = new PiAgentRunner(workspaceVfs, {
+  const getOrCreateRunner = (targetSessionId: string): PiAgentRunner => {
+    const existing = sessionRunners.get(targetSessionId);
+    if (existing) return existing;
+
+    const runner = new PiAgentRunner(workspaceVfs, {
       onAssistantUpdate: (sessionId, assistantMsg) => {
         set((state) => {
           const sessions = state.sessions.map((s) => {
@@ -344,20 +420,87 @@ export const useAppStore = create<AppState>((set, get) => {
           return { sessions };
         });
       },
-      onToolModifiedFile: (modifiedPath) => {
-        set((state) => ({
-          activePreviewPath: modifiedPath,
-          previewOpen: true,
-          previewRevision: state.previewRevision + 1,
-        }));
+      onToolModifiedFile: (modifiedPath, sessionId) => {
+        set((state) => {
+          const isCurrent = !sessionId || sessionId === state.activeSessionId;
+          if (isCurrent) {
+            return {
+              activePreviewPath: modifiedPath,
+              previewOpen: true,
+              previewRevision: state.previewRevision + 1,
+            };
+          }
+          if (state.activePreviewPath === modifiedPath) {
+            return { previewRevision: state.previewRevision + 1 };
+          }
+          return {};
+        });
+      },
+      onSessionFileChanged: (sessionId, change) => {
+        set((state) => {
+          const sessions = state.sessions.map((s) =>
+            s.id === sessionId
+              ? {
+                  ...s,
+                  fileChanges: mergeSessionFileChanges(s.fileChanges, change),
+                  updatedAt: Date.now(),
+                }
+              : s
+          );
+          const target = sessions.find((s) => s.id === sessionId);
+          if (target) {
+            saveSession(target).catch(() => undefined);
+          }
+          return { sessions };
+        });
+      },
+      onAllowToolForSession: (sessionId, toolName) => {
+        set((state) => {
+          const prev = state.sessionAllowedTools[sessionId] || [];
+          if (prev.includes(toolName)) return {};
+          return {
+            sessionAllowedTools: {
+              ...state.sessionAllowedTools,
+              [sessionId]: [...prev, toolName],
+            },
+          };
+        });
       },
       onRequestApproval: (req) => {
-        set({ pendingApproval: req });
+        const sid = req.sessionId || targetSessionId;
+        const enrichedReq: ApprovalRequest = { ...req, sessionId: sid };
+        set((state) => {
+          const nextMap = { ...state.pendingApprovalsBySession, [sid]: enrichedReq };
+          return {
+            pendingApprovalsBySession: nextMap,
+            pendingApproval:
+              sid === state.activeSessionId
+                ? enrichedReq
+                : nextMap[state.activeSessionId] ?? state.pendingApproval,
+          };
+        });
+        if (sid !== get().activeSessionId) {
+          const bgSession = get().sessions.find((s) => s.id === sid);
+          get().pushToast(`后台会话「${bgSession?.title || "任务"}」等待您审批`, "warning", {
+            durationMs: 6000,
+            action: {
+              label: "前往审批",
+              onClick: () => get().selectSession(sid),
+            },
+          });
+        }
       },
       onCancelApproval: (approvalId) => {
-        set((state) =>
-          state.pendingApproval?.id === approvalId ? { pendingApproval: null } : {}
-        );
+        set((state) => {
+          const nextMap: Record<string, ApprovalRequest> = {};
+          for (const [k, v] of Object.entries(state.pendingApprovalsBySession)) {
+            if (v.id !== approvalId) nextMap[k] = v;
+          }
+          return {
+            pendingApprovalsBySession: nextMap,
+            pendingApproval: nextMap[state.activeSessionId] ?? null,
+          };
+        });
       },
       onUpdateTodos: (sessionId, todos) => {
         set((state) => {
@@ -372,18 +515,48 @@ export const useAppStore = create<AppState>((set, get) => {
         });
       },
       onRequestQuestionnaire: (req) => {
-        set({ pendingQuestionnaire: req });
+        const sid = req.sessionId || targetSessionId;
+        const enrichedReq: QuestionnaireRequest = { ...req, sessionId: sid };
+        set((state) => {
+          const nextMap = { ...state.pendingQuestionnairesBySession, [sid]: enrichedReq };
+          return {
+            pendingQuestionnairesBySession: nextMap,
+            pendingQuestionnaire:
+              sid === state.activeSessionId
+                ? enrichedReq
+                : nextMap[state.activeSessionId] ?? state.pendingQuestionnaire,
+          };
+        });
+        if (sid !== get().activeSessionId) {
+          const bgSession = get().sessions.find((s) => s.id === sid);
+          get().pushToast(`后台会话「${bgSession?.title || "任务"}」需要确认偏好`, "info", {
+            durationMs: 6000,
+            action: {
+              label: "前往查看",
+              onClick: () => get().selectSession(sid),
+            },
+          });
+        }
       },
       onCancelQuestionnaire: (id) => {
-        set((state) =>
-          state.pendingQuestionnaire?.id === id ? { pendingQuestionnaire: null } : {}
-        );
+        set((state) => {
+          const nextMap: Record<string, QuestionnaireRequest> = {};
+          for (const [k, v] of Object.entries(state.pendingQuestionnairesBySession)) {
+            if (v.id !== id) nextMap[k] = v;
+          }
+          return {
+            pendingQuestionnairesBySession: nextMap,
+            pendingQuestionnaire: nextMap[state.activeSessionId] ?? null,
+          };
+        });
       },
       onHandoffSession: async (payload) => {
         await get().handoffActiveSession(payload);
       },
       onTokenBurdenUpdate: (report) => {
-        set({ tokenBurden: report });
+        if (targetSessionId === get().activeSessionId) {
+          set({ tokenBurden: report });
+        }
       },
       onSubagentUsage: (sessionId, usage) => {
         set((state) => ({
@@ -395,14 +568,88 @@ export const useAppStore = create<AppState>((set, get) => {
         }));
       },
       onRunFinished: (sessionId) => {
-        // 仅当没有新的运行接管时结束流式状态，防止切换会话触发的旧任务竞态覆盖
-        if (!runnerSingleton?.isRunning()) {
-          set({ isStreaming: false });
-        }
+        const wasManualAbort = manuallyAbortedSessions.has(sessionId);
+        manuallyAbortedSessions.delete(sessionId);
+
+        set((state) => {
+          const nextRunning = { ...state.runningSessionIds };
+          if (!sessionRunners.get(sessionId)?.isRunning()) {
+            delete nextRunning[sessionId];
+          }
+          const isBg = sessionId !== state.activeSessionId;
+          const nextUnread =
+            isBg && !wasManualAbort
+              ? { ...state.unreadCompletedSessionIds, [sessionId]: true }
+              : state.unreadCompletedSessionIds;
+          return {
+            runningSessionIds: nextRunning,
+            isStreaming: Boolean(nextRunning[state.activeSessionId]),
+            unreadCompletedSessionIds: nextUnread,
+          };
+        });
+
         const finished = get().sessions.find((s) => s.id === sessionId);
         if (finished) {
           saveSession(finished).catch(() => undefined);
         }
+
+        // 后台并行会话完成时推送站内 Toast +（失焦时）系统桌面通知
+        if (sessionId !== get().activeSessionId && !wasManualAbort) {
+          get().pushToast(`后台会话「${finished?.title || "任务"}」已完成`, "success", {
+            durationMs: 6000,
+            action: {
+              label: "立即查看",
+              onClick: () => get().selectSession(sessionId),
+            },
+          });
+          if (
+            typeof document !== "undefined" &&
+            document.hidden &&
+            typeof Notification !== "undefined" &&
+            Notification.permission === "granted"
+          ) {
+            try {
+              new Notification("Mizurisu Agent 任务已完成", {
+                body: finished?.title || "点击返回工作台查看执行结果",
+              });
+            } catch {
+              // 忽略不支持系统通知的环境
+            }
+          }
+        }
+
+        // 若该会话存在排队待发消息且非用户手动停止，自动出队续跑下一轮
+        const queuedList = get().queuedMessagesBySession[sessionId];
+        if (!wasManualAbort && queuedList && queuedList.length > 0) {
+          const [nextItem, ...restQueue] = queuedList;
+          set((state) => ({
+            queuedMessagesBySession: {
+              ...state.queuedMessagesBySession,
+              [sessionId]: restQueue,
+            },
+          }));
+          setTimeout(() => {
+            const latestSession = get().sessions.find((s) => s.id === sessionId);
+            if (!latestSession) return;
+            const attachments = nextItem.attachmentPaths.map((p) => ({
+              path: p,
+              name: p.split("/").pop() || p,
+              category: detectFileCategory(p),
+            }));
+            void dispatchPromptTurn({
+              session: latestSession,
+              historyBefore: [...latestSession.messages],
+              text: nextItem.text,
+              attachments,
+            }).catch((err) => {
+              get().pushToast(
+                `排队消息执行失败：${err instanceof Error ? err.message : String(err)}`,
+                "error"
+              );
+            });
+          }, 0);
+        }
+
         // 每次对话结束后轻量刷新余额
         const { config } = get();
         if (config.baseUrl && config.apiKey) {
@@ -410,10 +657,11 @@ export const useAppStore = create<AppState>((set, get) => {
         }
       },
     });
-    return runnerSingleton;
+    sessionRunners.set(targetSessionId, runner);
+    return runner;
   };
 
-  /** 发送或重发单轮对话的统一调度器，保证历史裁剪、图片与附件状态一致 */
+  /** 发送或重发单轮对话的统一调度器，保证历史裁剪、图片、权限模式与多会话并行一致 */
   const dispatchPromptTurn = async (params: {
     session: ChatSession;
     historyBefore: UiMessage[];
@@ -421,9 +669,13 @@ export const useAppStore = create<AppState>((set, get) => {
     attachments?: UiMessage["attachments"];
     imagesMeta?: UiMessage["images"];
     imageContents?: ImageContent[];
+    permissionModeOverride?: PermissionMode;
   }) => {
-    const runner = ensureRunner();
-    const { config, models, settings, customSkills, activeSkillId } = get();
+    const runner = getOrCreateRunner(params.session.id);
+    const { config, models, settings, customSkills, activeSkillId, sessionAllowedTools } = get();
+    const effectiveMode: PermissionMode =
+      params.permissionModeOverride ?? settings.permissionMode ?? "auto-edits";
+    manuallyAbortedSessions.delete(params.session.id);
 
     const userMsg: UiMessage = {
       id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_u`,
@@ -462,12 +714,16 @@ export const useAppStore = create<AppState>((set, get) => {
       updatedAt: Date.now(),
     };
 
-    set((state) => ({
-      isStreaming: true,
-      sessions: state.sessions.map((s) =>
-        s.id === params.session.id ? updatedSession : s
-      ),
-    }));
+    set((state) => {
+      const nextRunning = { ...state.runningSessionIds, [params.session.id]: true };
+      return {
+        runningSessionIds: nextRunning,
+        isStreaming: Boolean(nextRunning[state.activeSessionId]),
+        sessions: state.sessions.map((s) =>
+          s.id === params.session.id ? updatedSession : s
+        ),
+      };
+    });
     await saveSession(updatedSession);
 
     const allSkills = [...BUILTIN_SKILLS, ...customSkills];
@@ -486,6 +742,8 @@ export const useAppStore = create<AppState>((set, get) => {
           ? params.imageContents
           : undefined,
       initialTodos: params.session.todos,
+      permissionMode: effectiveMode,
+      sessionAllowedTools: sessionAllowedTools[params.session.id] || [],
     });
   };
 
@@ -503,6 +761,14 @@ export const useAppStore = create<AppState>((set, get) => {
     sessions: [],
     activeSessionId: "",
     isStreaming: false,
+    runningSessionIds: {},
+    unreadCompletedSessionIds: {},
+    pendingApprovalsBySession: {},
+    pendingQuestionnairesBySession: {},
+    sessionAllowedTools: {},
+    queuedMessagesBySession: {},
+    diffReviewOpen: false,
+    projectInstructionPath: null,
     files: [],
     activePreviewPath: null,
     previewRevision: 0,
@@ -653,7 +919,10 @@ export const useAppStore = create<AppState>((set, get) => {
                 .listFiles()
                 .then((nextFiles) => {
                   if (seq !== fileListSeq) return;
-                  set({ files: nextFiles });
+                  set({
+                    files: nextFiles,
+                    projectInstructionPath: findProjectInstructionFile(nextFiles)?.path ?? null,
+                  });
                 })
                 .catch(() => undefined);
             });
@@ -674,6 +943,7 @@ export const useAppStore = create<AppState>((set, get) => {
             sessions,
             activeSessionId: firstWsSession.id,
             files,
+            projectInstructionPath: findProjectInstructionFile(files)?.path ?? null,
             customSkills: savedSkills,
             workspaces,
             activeWorkspaceId,
@@ -1281,27 +1551,44 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     createSession: async () => {
-      if (get().isStreaming || get().pendingApproval) {
-        get().abortRun();
-      }
+      // 多会话真并行：新建会话不再强行中止后台正在运行的其他会话
       const next = createEmptySession("新对话", get().activeWorkspaceId);
       set((state) => ({
         sessions: [next, ...state.sessions],
         activeSessionId: next.id,
+        isStreaming: Boolean(state.runningSessionIds[next.id]),
+        pendingApproval: state.pendingApprovalsBySession[next.id] ?? null,
+        pendingQuestionnaire: state.pendingQuestionnairesBySession[next.id] ?? null,
         mobileTab: "chat",
       }));
       await saveSession(next);
     },
 
     selectSession: (id) => {
-      if (id === get().activeSessionId) {
-        set({ mobileTab: "chat" });
+      const stateBefore = get();
+      if (id === stateBefore.activeSessionId) {
+        if (stateBefore.unreadCompletedSessionIds[id]) {
+          const nextUnread = { ...stateBefore.unreadCompletedSessionIds };
+          delete nextUnread[id];
+          set({ unreadCompletedSessionIds: nextUnread, mobileTab: "chat" });
+        } else {
+          set({ mobileTab: "chat" });
+        }
         return;
       }
-      if (get().isStreaming || get().pendingApproval) {
-        get().abortRun();
-      }
-      set({ activeSessionId: id, mobileTab: "chat" });
+      // 多会话真并行：切走会话时后台会话继续运行，同步更新当前视图的流式/审批/问卷派生状态
+      set((state) => {
+        const nextUnread = { ...state.unreadCompletedSessionIds };
+        delete nextUnread[id];
+        return {
+          activeSessionId: id,
+          mobileTab: "chat",
+          isStreaming: Boolean(state.runningSessionIds[id]),
+          pendingApproval: state.pendingApprovalsBySession[id] ?? null,
+          pendingQuestionnaire: state.pendingQuestionnairesBySession[id] ?? null,
+          unreadCompletedSessionIds: nextUnread,
+        };
+      });
     },
 
     deleteSession: async (id) => {
@@ -1313,11 +1600,13 @@ export const useAppStore = create<AppState>((set, get) => {
           }
         : null;
       if (
-        get().activeSessionId === id &&
-        (get().isStreaming || get().pendingApproval)
+        get().runningSessionIds[id] ||
+        get().pendingApprovalsBySession[id] ||
+        get().pendingQuestionnairesBySession[id]
       ) {
-        get().abortRun({ discardResult: true });
+        get().abortRun({ discardResult: true, sessionId: id });
       }
+      sessionRunners.delete(id);
       await deleteSessionById(id);
       const activeWsId = get().activeWorkspaceId;
       const remaining = get().sessions.filter((s) => s.id !== id);
@@ -1325,13 +1614,25 @@ export const useAppStore = create<AppState>((set, get) => {
       if (wsRemaining.length === 0) {
         const fresh = createEmptySession("新对话", activeWsId);
         await saveSession(fresh);
-        set({ sessions: [fresh, ...remaining], activeSessionId: fresh.id });
+        set({
+          sessions: [fresh, ...remaining],
+          activeSessionId: fresh.id,
+          isStreaming: false,
+          pendingApproval: null,
+          pendingQuestionnaire: null,
+        });
       } else {
-        set((state) => ({
-          sessions: remaining,
-          activeSessionId:
-            state.activeSessionId === id ? wsRemaining[0].id : state.activeSessionId,
-        }));
+        set((state) => {
+          const nextActiveId =
+            state.activeSessionId === id ? wsRemaining[0].id : state.activeSessionId;
+          return {
+            sessions: remaining,
+            activeSessionId: nextActiveId,
+            isStreaming: Boolean(state.runningSessionIds[nextActiveId]),
+            pendingApproval: state.pendingApprovalsBySession[nextActiveId] ?? null,
+            pendingQuestionnaire: state.pendingQuestionnairesBySession[nextActiveId] ?? null,
+          };
+        });
       }
       if (snapshot) {
         get().pushToast(`已删除会话「${snapshot.title}」`, "info", {
@@ -1394,11 +1695,11 @@ export const useAppStore = create<AppState>((set, get) => {
       const hasImages = imageFiles.length > 0 || preloadedImages.length > 0;
       if (!hasText && !hasAttachments && !hasImages) return;
 
-      const runner = ensureRunner();
-      const { activeSessionId, sessions, config } = get();
+      const { activeSessionId, sessions, config, runningSessionIds } = get();
+      const runner = getOrCreateRunner(activeSessionId);
 
-      // 若正在生成且用户发送消息，触发中途插话引导并持久化该条消息
-      if (get().isStreaming && runner.isRunning()) {
+      // 若当前会话正在生成且用户发送消息，触发中途插话引导并持久化该条消息
+      if ((runningSessionIds[activeSessionId] || runner.isRunning()) && runner.isRunning()) {
         const steerText =
           trimmed ||
           (hasImages
@@ -1564,11 +1865,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     branchFromMessage: async (messageId) => {
-      const { activeSessionId, sessions, isStreaming, pendingApproval } = get();
-      if (isStreaming || pendingApproval) {
-        get().abortRun({ discardResult: true });
-      }
-
+      const { activeSessionId, sessions } = get();
       const source = sessions.find((s) => s.id === activeSessionId);
       if (!source) return;
       const idx = source.messages.findIndex((m) => m.id === messageId);
@@ -1577,7 +1874,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const sliced = source.messages.slice(0, idx);
       const targetMsg = source.messages[idx];
       const branched: ChatSession = {
-        ...createEmptySession(`${source.title} (分支)`),
+        ...createEmptySession(`${source.title} (分支)`, source.workspaceId),
         messages: sliced,
         totalTokens: sliced.reduce((acc, m) => acc + (m.usage?.totalTokens || 0), 0),
       };
@@ -1585,6 +1882,9 @@ export const useAppStore = create<AppState>((set, get) => {
       set((state) => ({
         sessions: [branched, ...state.sessions],
         activeSessionId: branched.id,
+        isStreaming: false,
+        pendingApproval: null,
+        pendingQuestionnaire: null,
       }));
       await saveSession(branched);
 
@@ -1604,23 +1904,409 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     abortRun: (options) => {
-      const pending = get().pendingApproval;
+      const targetId = options?.sessionId || get().activeSessionId;
+      manuallyAbortedSessions.add(targetId);
+      const isActiveTarget = targetId === get().activeSessionId;
+
+      const pending =
+        get().pendingApprovalsBySession[targetId] ??
+        (isActiveTarget ? get().pendingApproval : null);
       if (pending) {
         pending.resolve(false);
       }
-      const pendingQ = get().pendingQuestionnaire;
+      const pendingQ =
+        get().pendingQuestionnairesBySession[targetId] ??
+        (isActiveTarget ? get().pendingQuestionnaire : null);
       if (pendingQ) {
         pendingQ.resolve(null);
       }
-      ensureRunner().abort(options);
-      set({ isStreaming: false, pendingApproval: null, pendingQuestionnaire: null });
+      sessionRunners.get(targetId)?.abort({ discardResult: options?.discardResult });
+
+      set((state) => {
+        const nextRunning = { ...state.runningSessionIds };
+        delete nextRunning[targetId];
+        const nextApprovals = { ...state.pendingApprovalsBySession };
+        delete nextApprovals[targetId];
+        const nextQuestionnaires = { ...state.pendingQuestionnairesBySession };
+        delete nextQuestionnaires[targetId];
+        return {
+          runningSessionIds: nextRunning,
+          pendingApprovalsBySession: nextApprovals,
+          pendingQuestionnairesBySession: nextQuestionnaires,
+          isStreaming: Boolean(nextRunning[state.activeSessionId]),
+          pendingApproval: nextApprovals[state.activeSessionId] ?? null,
+          pendingQuestionnaire: nextQuestionnaires[state.activeSessionId] ?? null,
+        };
+      });
+    },
+
+    setPermissionMode: async (mode) => {
+      await get().updateSettings({ permissionMode: mode });
+    },
+
+    cyclePermissionMode: async () => {
+      const current = get().settings.permissionMode ?? "auto-edits";
+      const next = cycleModeHelper(current);
+      await get().updateSettings({ permissionMode: next });
+      return next;
+    },
+
+    approvePlanAndExecute: async (sessionId) => {
+      const targetId = sessionId || get().activeSessionId;
+      const targetSession = get().sessions.find((s) => s.id === targetId);
+      if (!targetSession) return;
+      await get().updateSettings({ permissionMode: "auto-edits" });
+      if (get().runningSessionIds[targetId]) {
+        get().pushToast("当前会话正在执行中", "info");
+        return;
+      }
+      await dispatchPromptTurn({
+        session: targetSession,
+        historyBefore: [...targetSession.messages],
+        text: "已批准上述规划方案，请按步骤立即开始执行落地。",
+        permissionModeOverride: "auto-edits",
+      });
+    },
+
+    setDiffReviewOpen: (open) => set({ diffReviewOpen: open }),
+
+    acceptSessionFileChange: async (path) => {
+      const sid = get().activeSessionId;
+      let updatedTarget: ChatSession | undefined;
+      set((state) => ({
+        sessions: state.sessions.map((s) => {
+          if (s.id !== sid || !s.fileChanges) return s;
+          updatedTarget = {
+            ...s,
+            fileChanges: s.fileChanges.map((fc) =>
+              fc.path === path ? { ...fc, reviewed: "accepted" } : fc
+            ),
+            updatedAt: Date.now(),
+          };
+          return updatedTarget;
+        }),
+      }));
+      if (updatedTarget) {
+        await saveSession(updatedTarget);
+      }
+    },
+
+    acceptAllSessionFileChanges: async () => {
+      const sid = get().activeSessionId;
+      let updatedTarget: ChatSession | undefined;
+      set((state) => ({
+        sessions: state.sessions.map((s) => {
+          if (s.id !== sid || !s.fileChanges) return s;
+          updatedTarget = {
+            ...s,
+            fileChanges: s.fileChanges.map((fc) =>
+              fc.reviewed === "reverted" ? fc : { ...fc, reviewed: "accepted" }
+            ),
+            updatedAt: Date.now(),
+          };
+          return updatedTarget;
+        }),
+      }));
+      if (updatedTarget) {
+        await saveSession(updatedTarget);
+      }
+      get().pushToast("已确认保留本会话全部文件改动", "success");
+    },
+
+    revertSessionFileChange: async (path) => {
+      const sid = get().activeSessionId;
+      const session = get().sessions.find((s) => s.id === sid);
+      const change = session?.fileChanges?.find((fc) => fc.path === path);
+      if (!change || change.reviewed === "reverted") return;
+
+      if (!change.existedBefore) {
+        await workspaceVfs.deleteFile(path).catch(() => undefined);
+      } else if (change.beforeSnapshotId) {
+        await workspaceVfs.restoreSnapshot(change.beforeSnapshotId, path);
+      } else {
+        throw new Error(`文件「${path}」缺少改前快照，无法自动回滚`);
+      }
+
+      let updatedTarget: ChatSession | undefined;
+      set((state) => ({
+        sessions: state.sessions.map((s) => {
+          if (s.id !== sid || !s.fileChanges) return s;
+          updatedTarget = {
+            ...s,
+            fileChanges: s.fileChanges.map((fc) =>
+              fc.path === path ? { ...fc, reviewed: "reverted" } : fc
+            ),
+            updatedAt: Date.now(),
+          };
+          return updatedTarget;
+        }),
+      }));
+      if (updatedTarget) {
+        await saveSession(updatedTarget);
+      }
+      await get().refreshFiles();
+      get().pushToast(`已回滚文件：${path}`, "success");
+    },
+
+    revertAllSessionFileChanges: async () => {
+      const sid = get().activeSessionId;
+      const session = get().sessions.find((s) => s.id === sid);
+      const list = (session?.fileChanges || []).filter((fc) => fc.reviewed !== "reverted");
+      if (list.length === 0) return;
+
+      let revertedCount = 0;
+      for (const item of list) {
+        try {
+          if (!item.existedBefore) {
+            await workspaceVfs.deleteFile(item.path).catch(() => undefined);
+          } else if (item.beforeSnapshotId) {
+            await workspaceVfs.restoreSnapshot(item.beforeSnapshotId, item.path);
+          } else {
+            continue;
+          }
+          revertedCount += 1;
+        } catch {
+          // 跳过个别无法恢复的文件，继续回滚其余文件
+        }
+      }
+
+      let updatedTarget: ChatSession | undefined;
+      set((state) => ({
+        sessions: state.sessions.map((s) => {
+          if (s.id !== sid || !s.fileChanges) return s;
+          updatedTarget = {
+            ...s,
+            fileChanges: s.fileChanges.map((fc) => ({ ...fc, reviewed: "reverted" })),
+            updatedAt: Date.now(),
+          };
+          return updatedTarget;
+        }),
+      }));
+      if (updatedTarget) {
+        await saveSession(updatedTarget);
+      }
+      await get().refreshFiles();
+      get().pushToast(`已回滚本会话 ${revertedCount} 个文件改动`, "success");
+    },
+
+    enqueueMessage: (text, attachmentPaths = []) => {
+      const clean = text.trim();
+      if (!clean && attachmentPaths.length === 0) return;
+      const sid = get().activeSessionId;
+      if (!sid) return;
+      const item: QueuedMessageItem = {
+        id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        text: clean,
+        attachmentPaths: [...attachmentPaths],
+        createdAt: Date.now(),
+      };
+      set((state) => {
+        const prev = state.queuedMessagesBySession[sid] || [];
+        return {
+          queuedMessagesBySession: {
+            ...state.queuedMessagesBySession,
+            [sid]: [...prev, item],
+          },
+        };
+      });
+      get().pushToast("已加入发送队列，将在当前轮次完成后自动执行", "info", {
+        durationMs: 2600,
+      });
+    },
+
+    removeQueuedMessage: (id, sessionId) => {
+      const sid = sessionId || get().activeSessionId;
+      set((state) => ({
+        queuedMessagesBySession: {
+          ...state.queuedMessagesBySession,
+          [sid]: (state.queuedMessagesBySession[sid] || []).filter((q) => q.id !== id),
+        },
+      }));
+    },
+
+    sendQueuedMessageNow: async (id, sessionId) => {
+      const sid = sessionId || get().activeSessionId;
+      const queue = get().queuedMessagesBySession[sid] || [];
+      const target = queue.find((q) => q.id === id);
+      if (!target) return;
+      get().removeQueuedMessage(id, sid);
+
+      const runner = getOrCreateRunner(sid);
+      if (runner.isRunning()) {
+        const steerMsg: UiMessage = {
+          id: `msg_${Date.now()}_steer`,
+          role: "user",
+          content: `[中途补充引导] ${target.text}`,
+          createdAt: Date.now(),
+        };
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === sid
+              ? { ...s, messages: [...s.messages, steerMsg], updatedAt: Date.now() }
+              : s
+          ),
+        }));
+        runner.steer(target.text);
+        return;
+      }
+
+      const sessionObj = get().sessions.find((s) => s.id === sid);
+      if (!sessionObj) return;
+      await dispatchPromptTurn({
+        session: sessionObj,
+        historyBefore: [...sessionObj.messages],
+        text: target.text,
+        attachments: target.attachmentPaths.map((p) => ({
+          path: p,
+          name: p.split("/").pop() || p,
+          category: detectFileCategory(p),
+        })),
+      });
+    },
+
+    compactActiveSession: async () => {
+      const { sessions, activeSessionId, config, models } = get();
+      const source = sessions.find((s) => s.id === activeSessionId);
+      if (!source || source.messages.length === 0) {
+        throw new Error("当前会话暂无对话历史可压缩");
+      }
+
+      const fallbackHandoff = buildHandoffFromSession(source, source.todos || []);
+      let summaryMarkdown = "";
+
+      if (config.baseUrl.trim() && config.apiKey.trim()) {
+        try {
+          const modelInfo =
+            models.find((m) => m.id === config.selectedModelId) ??
+            inferModelMetadata(config.selectedModelId || "gpt-4o", config);
+          const piModel = toPiModel(modelInfo, config);
+          const streamFn = createNewApiStreamFn(() => getPlatformAdapter().getFetch());
+
+          const transcript = source.messages
+            .slice(-24)
+            .map((m) => {
+              const roleLabel = m.role === "user" ? "用户" : "助手";
+              const body = (m.content || "").slice(0, 1200);
+              const tools = (m.toolCalls || [])
+                .map((tc) => `${tc.name}${tc.modifiedPath ? `(${tc.modifiedPath})` : ""}`)
+                .join(", ");
+              return `【${roleLabel}】${body}${tools ? `\n[工具: ${tools}]` : ""}`;
+            })
+            .join("\n\n---\n\n");
+
+          const compactAgent = new Agent({
+            initialState: {
+              systemPrompt:
+                "你是上下文压缩器。请把以下办公会话精炼成 4 段 Markdown 摘要（① 核心目标与背景 ② 已达成结论与关键数据 ③ 已新建/修改的工作区文件清单 ④ 待办与下一步动作），总字数控制在 500 字以内，只保留高信息密度事实。",
+              model: piModel,
+              thinkingLevel: "off",
+              tools: [],
+              messages: [] as AgentMessage[],
+            },
+            streamFn,
+            getApiKey: () => config.apiKey.trim(),
+          });
+
+          let latestText = "";
+          const unsub = compactAgent.subscribe((ev) => {
+            if (ev.type === "message_end" && ev.message.role === "assistant") {
+              const am = ev.message as AssistantMessage;
+              latestText = am.content
+                .filter((b): b is TextContent => b.type === "text")
+                .map((b) => b.text)
+                .join("");
+            }
+          });
+          try {
+            await compactAgent.prompt(
+              `请压缩以下会话记录：\n\n${transcript.slice(0, 14000)}`
+            );
+            await compactAgent.waitForIdle();
+          } finally {
+            unsub();
+          }
+          if (latestText.trim()) {
+            summaryMarkdown = latestText.trim();
+          }
+        } catch {
+          // 网络或额度受限时自动降级为本地结构化交接摘要
+        }
+      }
+
+      if (!summaryMarkdown) {
+        summaryMarkdown = [
+          `### 核心摘要\n${fallbackHandoff.summary}`,
+          fallbackHandoff.relevantFiles.length > 0
+            ? `### 涉及文件\n${fallbackHandoff.relevantFiles.map((f) => `- ${f}`).join("\n")}`
+            : "",
+          fallbackHandoff.nextSteps.length > 0
+            ? `### 待续步骤\n${fallbackHandoff.nextSteps.map((n) => `- ${n}`).join("\n")}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+      }
+
+      const now = Date.now();
+      const compactedTitle = source.title.includes("(压缩延续)")
+        ? source.title
+        : `${source.title} (压缩延续)`;
+      const nextSession: ChatSession = {
+        ...createEmptySession(compactedTitle, source.workspaceId),
+        todos: source.todos,
+        messages: [
+          {
+            id: `msg_${now}_compact_u`,
+            role: "user",
+            content: `[上下文压缩摘要 · 承接自「${source.title}」]\n\n${summaryMarkdown}`,
+            createdAt: now,
+          },
+          {
+            id: `msg_${now + 1}_compact_a`,
+            role: "assistant",
+            content:
+              "已继承上述压缩上下文与工作区文件状态。上下文窗口已大幅释放，请直接告诉我下一步要处理的任务。",
+            createdAt: now + 1,
+          },
+        ],
+      };
+
+      set((state) => ({
+        sessions: [nextSession, ...state.sessions],
+        activeSessionId: nextSession.id,
+        isStreaming: false,
+        pendingApproval: null,
+        pendingQuestionnaire: null,
+        tokenBurden: undefined,
+        mobileTab: "chat",
+      }));
+      await saveSession(nextSession);
+      get().pushToast(`已将对话压缩至清爽新会话「${nextSession.title}」`, "success");
+    },
+
+    openOrCreateProjectInstructions: async () => {
+      const files = await workspaceVfs.listFiles();
+      const existing = findProjectInstructionFile(files);
+      if (existing) {
+        get().openPreview(existing.path);
+        return;
+      }
+      await workspaceVfs.writeText("MIZURISU.md", DEFAULT_MIZURISU_MD_TEMPLATE, {
+        snapshotNote: "新建工作区协作规范",
+      });
+      await get().refreshFiles();
+      get().openPreview("MIZURISU.md");
+      get().pushToast("已创建 MIZURISU.md 项目规范文档（每次对话将自动加载）", "success");
     },
 
     refreshFiles: async () => {
       const seq = ++fileListSeq;
       const files = await workspaceVfs.listFiles();
       if (seq === fileListSeq) {
-        set({ files });
+        set({
+          files,
+          projectInstructionPath: findProjectInstructionFile(files)?.path ?? null,
+        });
       }
     },
 
@@ -1760,8 +2446,12 @@ export const useAppStore = create<AppState>((set, get) => {
     switchWorkspace: async (workspaceId) => {
       const target = get().workspaces.find((w) => w.id === workspaceId);
       if (!target) return;
-      if (get().isStreaming || get().pendingApproval) {
-        get().abortRun();
+      // 切换工作区时底层 VFS 根目录将变更，中止所有运行中的会话任务
+      for (const sid of Object.keys(get().runningSessionIds)) {
+        get().abortRun({ sessionId: sid });
+      }
+      for (const sid of Object.keys(get().pendingApprovalsBySession)) {
+        get().abortRun({ sessionId: sid });
       }
 
       workspaceVfs.setActiveWorkspace(target.id, target.nativeDir);
@@ -1787,9 +2477,11 @@ export const useAppStore = create<AppState>((set, get) => {
         sessions,
         activeSessionId: matching[0].id,
         files,
+        projectInstructionPath: findProjectInstructionFile(files)?.path ?? null,
         activePreviewPath: nextPreview,
         previewOpen: Boolean(nextPreview),
         tokenBurden: undefined,
+        diffReviewOpen: false,
       });
       get().pushToast(`已切换工作区：${target.name}`, "info");
     },
@@ -1864,19 +2556,38 @@ export const useAppStore = create<AppState>((set, get) => {
       return parsed;
     },
 
-    resolveApproval: (approved) => {
-      const pending = get().pendingApproval;
+    resolveApproval: (approved, options) => {
+      const activeId = get().activeSessionId;
+      const pending = get().pendingApprovalsBySession[activeId] ?? get().pendingApproval;
       if (pending) {
-        pending.resolve(approved);
-        set({ pendingApproval: null });
+        const sid = pending.sessionId || activeId;
+        pending.resolve(approved, options);
+        set((state) => {
+          const nextMap = { ...state.pendingApprovalsBySession };
+          delete nextMap[sid];
+          return {
+            pendingApprovalsBySession: nextMap,
+            pendingApproval: nextMap[state.activeSessionId] ?? null,
+          };
+        });
       }
     },
 
     resolveQuestionnaire: (answers) => {
-      const pendingQ = get().pendingQuestionnaire;
+      const activeId = get().activeSessionId;
+      const pendingQ =
+        get().pendingQuestionnairesBySession[activeId] ?? get().pendingQuestionnaire;
       if (pendingQ) {
+        const sid = pendingQ.sessionId || activeId;
         pendingQ.resolve(answers);
-        set({ pendingQuestionnaire: null });
+        set((state) => {
+          const nextMap = { ...state.pendingQuestionnairesBySession };
+          delete nextMap[sid];
+          return {
+            pendingQuestionnairesBySession: nextMap,
+            pendingQuestionnaire: nextMap[state.activeSessionId] ?? null,
+          };
+        });
       }
     },
 
@@ -1908,6 +2619,9 @@ export const useAppStore = create<AppState>((set, get) => {
       set((state) => ({
         sessions: [next, ...state.sessions],
         activeSessionId: next.id,
+        isStreaming: false,
+        pendingApproval: null,
+        pendingQuestionnaire: null,
         mobileTab: "chat",
         composerDraft: payload.promptDraft,
         tokenBurden: undefined,
@@ -1919,9 +2633,11 @@ export const useAppStore = create<AppState>((set, get) => {
     clearComposerDraft: () => set({ composerDraft: undefined }),
 
     resetAllData: async () => {
-      if (get().isStreaming || get().pendingApproval) {
-        get().abortRun({ discardResult: true });
+      for (const sid of Array.from(sessionRunners.keys())) {
+        get().abortRun({ discardResult: true, sessionId: sid });
       }
+      sessionRunners.clear();
+      manuallyAbortedSessions.clear();
       initPromise = null;
       for (const timer of toastTimers.values()) {
         clearTimeout(timer);
@@ -1930,6 +2646,14 @@ export const useAppStore = create<AppState>((set, get) => {
       // 先清空内存会话与流式状态，防止异步清库期间旧运行微任务回写数据
       set({
         isStreaming: false,
+        runningSessionIds: {},
+        unreadCompletedSessionIds: {},
+        pendingApprovalsBySession: {},
+        pendingQuestionnairesBySession: {},
+        sessionAllowedTools: {},
+        queuedMessagesBySession: {},
+        diffReviewOpen: false,
+        projectInstructionPath: null,
         pendingApproval: null,
         pendingQuestionnaire: null,
         tokenBurden: undefined,

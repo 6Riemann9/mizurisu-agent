@@ -19,7 +19,9 @@ import type {
   MessageUsage,
   ModelInfo,
   NewApiConfig,
+  PermissionMode,
   QuestionnaireRequest,
+  SessionFileChange,
   SkillTemplate,
   TodoItem,
   TokenBurdenReport,
@@ -27,12 +29,16 @@ import type {
   UiMessage,
 } from "../types";
 import { createDefaultExtensionHost, estimateTokenBurden, type ExtensionRuntimeContext } from "./extensions";
+import { evaluateToolPermission, isWriteOrMutatingTool } from "./permission";
+import { loadProjectInstructions } from "./project-instructions";
 import { buildSystemPrompt } from "./system-prompt";
 import { buildAgentTools } from "./tools";
 
 export interface RunnerCallbacks {
   onAssistantUpdate: (sessionId: string, msg: UiMessage) => void;
-  onToolModifiedFile: (path: string) => void;
+  onToolModifiedFile: (path: string, sessionId?: string) => void;
+  onSessionFileChanged?: (sessionId: string, change: SessionFileChange) => void;
+  onAllowToolForSession?: (sessionId: string, toolName: string) => void;
   onRequestApproval: (req: ApprovalRequest) => void;
   /** 当运行被取消或中断时通知 UI 主动关闭对应审批弹窗 */
   onCancelApproval?: (approvalId: string) => void;
@@ -352,6 +358,8 @@ export class PiAgentRunner {
     activeSkill?: SkillTemplate;
     images?: ImageContent[];
     initialTodos?: TodoItem[];
+    permissionMode?: PermissionMode;
+    sessionAllowedTools?: string[];
   }): Promise<void> {
     // 在任何异步等待前先抢占运行序号并中止旧运行，防止并发启动时状态串写
     const runSeq = ++this.runSeq;
@@ -359,8 +367,17 @@ export class PiAgentRunner {
     this.activeSessionId = options.sessionId;
     this.agent?.abort();
 
+    const effectivePermissionMode: PermissionMode =
+      options.permissionMode ?? options.settings.permissionMode ?? "auto-edits";
+    const sessionAllowedSet = new Set<string>(options.sessionAllowedTools || []);
+
     const platform = getPlatformAdapter();
     const files = await this.vfs.listFiles();
+    if (this.activeRunSeq !== runSeq) {
+      return;
+    }
+
+    const projectInstructions = await loadProjectInstructions(this.vfs, files);
     if (this.activeRunSeq !== runSeq) {
       return;
     }
@@ -379,6 +396,8 @@ export class PiAgentRunner {
       vfs: this.vfs,
       config: options.config,
       settings: options.settings,
+      permissionMode: effectivePermissionMode,
+      sessionAllowedTools: sessionAllowedSet,
       model: piModel,
       modelInfo,
       models: options.models,
@@ -391,13 +410,27 @@ export class PiAgentRunner {
         this.callbacks.onUpdateTodos?.(options.sessionId, nextTodos);
       },
       requestQuestionnaire: (req) => {
-        this.callbacks.onRequestQuestionnaire?.(req);
+        this.callbacks.onRequestQuestionnaire?.({
+          ...req,
+          sessionId: req.sessionId || options.sessionId,
+        });
       },
       cancelQuestionnaire: (id) => {
         this.callbacks.onCancelQuestionnaire?.(id);
       },
       requestApproval: (req) => {
-        this.callbacks.onRequestApproval(req);
+        const origResolve = req.resolve;
+        this.callbacks.onRequestApproval({
+          ...req,
+          sessionId: req.sessionId || options.sessionId,
+          resolve: (approved, resolveOpts) => {
+            if (approved && resolveOpts?.rememberForSession) {
+              sessionAllowedSet.add(req.toolName);
+              this.callbacks.onAllowToolForSession?.(options.sessionId, req.toolName);
+            }
+            origResolve(approved, resolveOpts);
+          },
+        });
       },
       cancelApproval: (id) => {
         this.callbacks.onCancelApproval?.(id);
@@ -420,11 +453,18 @@ export class PiAgentRunner {
       activeSkill: options.activeSkill,
       customSystemPrompt: options.settings.customSystemPrompt,
       extensionHints: compiledExt.promptSnippets,
+      permissionMode: effectivePermissionMode,
+      projectInstructions,
     });
 
     const assistantMsgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const toolMap = new Map<string, ToolCallRecord>();
     const roundMap = new Map<number, AssistantRoundState>();
+    const pendingMutationMeta = new Map<
+      string,
+      { path: string; existedBefore: boolean; prevLatestSnapId?: string; isDelete: boolean }
+    >();
+    const pendingChangePromises: Promise<void>[] = [];
     let activeRoundIndex = -1;
 
     let currentAssistant: UiMessage = {
@@ -434,6 +474,7 @@ export class PiAgentRunner {
       thinking: "",
       toolCalls: [],
       modelId: piModel.id,
+      ...(effectivePermissionMode === "plan" ? { planMode: true } : {}),
       createdAt: Date.now(),
       isStreaming: true,
     };
@@ -556,9 +597,25 @@ export class PiAgentRunner {
       },
       beforeToolCall: async (context, signal) => {
         const { toolCall, args } = context;
+        const rawArgs = (args && typeof args === "object" ? args : undefined) as
+          | Record<string, unknown>
+          | undefined;
         if (signal?.aborted) {
           return { block: true, reason: "用户已终止执行" };
         }
+
+        // Plan 只读规划模式下，在一切插件审批弹窗前直接硬性拦截写/删/命令操作
+        if (effectivePermissionMode === "plan" && isWriteOrMutatingTool(toolCall.name, rawArgs)) {
+          const planDecision = evaluateToolPermission({
+            toolName: toolCall.name,
+            args: rawArgs,
+            mode: "plan",
+          });
+          if (planDecision.decision === "block") {
+            return { block: true, reason: planDecision.reason };
+          }
+        }
+
         if (compiledExt.beforeHooks.length > 0) {
           const hookRes = await extensionHost.runBeforeToolCall(
             compiledExt.beforeHooks,
@@ -570,57 +627,97 @@ export class PiAgentRunner {
             return hookRes;
           }
         }
-        const needConfirm =
-          toolCall.name === "run_shell_command" ||
-          (toolCall.name === "delete_file" && !options.settings.autoApproveDelete);
 
-        if (!needConfirm) return undefined;
+        // mcp_proxy(call_tool) 的权限评估与审批弹窗已由 mcp-adapter 钩子处理（支持 full-auto 与 sessionAllowedTools）
+        if (toolCall.name !== "mcp_proxy") {
+          const decision = evaluateToolPermission({
+            toolName: toolCall.name,
+            args: rawArgs,
+            mode: effectivePermissionMode,
+            sessionAllowedTools: sessionAllowedSet,
+            autoApproveDelete: options.settings.autoApproveDelete,
+          });
 
-        const approved = await new Promise<boolean>((resolve) => {
-          let settled = false;
-          const cleanup = () => {
-            signal?.removeEventListener("abort", onAbort);
-          };
-          const safeResolve = (value: boolean) => {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            resolve(value);
-          };
-          const onAbort = () => {
-            this.callbacks.onCancelApproval?.(toolCall.id);
-            safeResolve(false);
-          };
-
-          // 监听中断信号，确保用户在等待审批时点击停止不会造成 Promise 永久挂起死锁
-          signal?.addEventListener("abort", onAbort, { once: true });
-          if (signal?.aborted) {
-            onAbort();
-            return;
+          if (decision.decision === "block") {
+            return { block: true, reason: decision.reason };
           }
 
-          this.callbacks.onRequestApproval({
-            id: toolCall.id,
-            toolName: toolCall.name,
-            title:
-              toolCall.name === "run_shell_command"
-                ? "确认执行本机 Shell 命令"
-                : "确认删除工作区文件",
-            description:
-              toolCall.name === "run_shell_command"
-                ? "Agent 请求在您的电脑上执行以下命令，请确认安全后再放行："
-                : "Agent 请求删除工作区中的以下文件（删除前仍会保留快照）：",
-            argsPreview: JSON.stringify(args, null, 2),
-            resolve: safeResolve,
-          });
-        });
+          if (decision.decision === "ask") {
+            const approvalRes = await new Promise<{
+              approved: boolean;
+              rememberForSession?: boolean;
+            }>((resolve) => {
+              let settled = false;
+              const cleanup = () => {
+                signal?.removeEventListener("abort", onAbort);
+              };
+              const safeResolve = (
+                value: boolean,
+                resolveOpts?: { rememberForSession?: boolean }
+              ) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve({ approved: value, rememberForSession: resolveOpts?.rememberForSession });
+              };
+              const onAbort = () => {
+                this.callbacks.onCancelApproval?.(toolCall.id);
+                safeResolve(false);
+              };
 
-        if (!approved || signal?.aborted) {
-          return {
-            block: true,
-            reason: signal?.aborted ? "用户已终止执行" : "用户在界面拒绝了该高危操作",
-          };
+              // 监听中断信号，确保用户在等待审批时点击停止不会造成 Promise 永久挂起死锁
+              signal?.addEventListener("abort", onAbort, { once: true });
+              if (signal?.aborted) {
+                onAbort();
+                return;
+              }
+
+              this.callbacks.onRequestApproval({
+                id: toolCall.id,
+                sessionId: options.sessionId,
+                toolName: toolCall.name,
+                title: decision.title,
+                description: decision.description,
+                argsPreview: JSON.stringify(args, null, 2),
+                allowSessionToolOption: decision.allowSessionToolOption,
+                resolve: safeResolve,
+              });
+            });
+
+            if (!approvalRes.approved || signal?.aborted) {
+              return {
+                block: true,
+                reason: signal?.aborted ? "用户已终止执行" : "用户在界面拒绝了该高危操作",
+              };
+            }
+
+            if (approvalRes.rememberForSession) {
+              sessionAllowedSet.add(toolCall.name);
+              this.callbacks.onAllowToolForSession?.(options.sessionId, toolCall.name);
+            }
+          }
         }
+
+        // 记录执行前目标文件状态与最新快照，用于工具结束后构建会话 Diff Review 基线
+        if (isWriteOrMutatingTool(toolCall.name, rawArgs)) {
+          const rawTarget =
+            (typeof rawArgs?.path === "string" && rawArgs.path.trim()) ||
+            (typeof rawArgs?.outputPath === "string" && rawArgs.outputPath.trim()) ||
+            "";
+          if (rawTarget) {
+            const existedBefore = await this.vfs.exists(rawTarget).catch(() => false);
+            const prevSnaps = existedBefore
+              ? await this.vfs.getSnapshots(rawTarget).catch(() => [])
+              : [];
+            pendingMutationMeta.set(toolCall.id, {
+              path: rawTarget,
+              existedBefore,
+              prevLatestSnapId: prevSnaps[0]?.id,
+              isDelete: toolCall.name === "delete_file",
+            });
+          }
+        }
+
         return undefined;
       },
     });
@@ -689,6 +786,7 @@ export class PiAgentRunner {
               content?: Array<{ type: string; text?: string }>;
               details?: {
                 modifiedPath?: string;
+                deletedPath?: string;
                 changeSummary?: string;
                 rollbackSnapshotId?: string;
                 rollbackPath?: string;
@@ -701,7 +799,40 @@ export class PiAgentRunner {
           .join("\n");
         const modifiedPath = resObj?.details?.modifiedPath;
         if (modifiedPath && !event.isError) {
-          this.callbacks.onToolModifiedFile(modifiedPath);
+          this.callbacks.onToolModifiedFile(modifiedPath, options.sessionId);
+        }
+        const preMeta = pendingMutationMeta.get(event.toolCallId);
+        pendingMutationMeta.delete(event.toolCallId);
+        const changedTargetPath = modifiedPath || resObj?.details?.deletedPath || preMeta?.path;
+        if (!event.isError && changedTargetPath && this.callbacks.onSessionFileChanged) {
+          const onSessionFileChanged = this.callbacks.onSessionFileChanged;
+          const isDelete = event.toolName === "delete_file" || Boolean(preMeta?.isDelete);
+          const task = (async () => {
+            if (this.activeRunSeq !== runSeq) return;
+            const snaps = await this.vfs.getSnapshots(changedTargetPath).catch(() => []);
+            const latestSnapId = snaps[0]?.id;
+            const beforeSnapshotId =
+              resObj?.details?.rollbackSnapshotId ||
+              (latestSnapId && latestSnapId !== preMeta?.prevLatestSnapId
+                ? latestSnapId
+                : preMeta?.prevLatestSnapId);
+            const existedBefore = preMeta ? preMeta.existedBefore : Boolean(beforeSnapshotId);
+            const action: SessionFileChange["action"] = isDelete
+              ? "deleted"
+              : existedBefore
+                ? "modified"
+                : "created";
+            onSessionFileChanged(options.sessionId, {
+              path: changedTargetPath,
+              action,
+              toolName: event.toolName,
+              summary: resObj?.details?.changeSummary,
+              beforeSnapshotId,
+              existedBefore,
+              updatedAt: Date.now(),
+            });
+          })();
+          pendingChangePromises.push(task);
         }
         toolMap.set(event.toolCallId, {
           id: event.toolCallId,
@@ -731,6 +862,7 @@ export class PiAgentRunner {
         : "";
       await this.agent.prompt(`${basePromptText}${attachNote}`, options.images);
       await this.agent.waitForIdle();
+      await Promise.allSettled(pendingChangePromises);
     } catch (err) {
       currentAssistant.errorMessage = err instanceof Error ? err.message : String(err);
     } finally {

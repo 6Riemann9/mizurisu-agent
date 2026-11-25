@@ -320,6 +320,10 @@ export const mcpAdapterExtension: MizurisuExtension = {
       if (toolCall.name !== "mcp_proxy") return undefined;
       const action = (args as { action?: string } | undefined)?.action;
       if (action !== "call_tool") return undefined;
+      if (ctx.permissionMode === "plan") return undefined;
+      if (ctx.permissionMode === "full-auto" || ctx.sessionAllowedTools?.has("mcp_proxy")) {
+        return undefined;
+      }
       if (!ctx.requestApproval) return undefined;
 
       const approved = await new Promise<boolean>((resolve) => {
@@ -342,10 +346,12 @@ export const mcpAdapterExtension: MizurisuExtension = {
         }
         ctx.requestApproval?.({
           id: toolCall.id,
+          sessionId: ctx.sessionId,
           toolName: "mcp_proxy",
           title: "确认调用外部 Remote MCP 工具",
           description: "Agent 请求通过 Remote MCP 代理调用外部服务工具，请确认参数安全后再执行：",
           argsPreview: JSON.stringify(args, null, 2),
+          allowSessionToolOption: true,
           resolve: safeResolve,
         });
       });

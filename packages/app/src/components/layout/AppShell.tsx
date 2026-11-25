@@ -4,8 +4,10 @@ import { useGlobalShortcuts } from "../../hooks/useGlobalShortcuts";
 import { kvGet, kvSet } from "../../storage/db";
 import { useAppStore } from "../../store/useAppStore";
 import { LoginView } from "../auth/LoginView";
+import { PERMISSION_MODE_META } from "../../agent/permission";
 import { ApprovalDialog } from "../chat/ApprovalDialog";
 import { ChatPane } from "../chat/ChatPane";
+import { DiffReviewModal } from "../chat/DiffReviewModal";
 import { QuestionnaireDialog } from "../chat/QuestionnaireDialog";
 import { CommandPalette } from "../command/CommandPalette";
 import { ShortcutHelpModal } from "../command/ShortcutHelpModal";
@@ -60,11 +62,14 @@ export function AppShell() {
     shortcutHelpOpen,
     pendingApproval,
     pendingQuestionnaire,
+    diffReviewOpen,
     mobileTab,
     setMobileTab,
     statusBanner,
     files,
     updateSettings,
+    cyclePermissionMode,
+    pushToast,
     setPreviewOpen,
     setPreviewExpanded,
     openPreview,
@@ -98,8 +103,16 @@ export function AppShell() {
       settingsOpen ||
       commandPaletteOpen ||
       shortcutHelpOpen ||
+      diffReviewOpen ||
       Boolean(pendingApproval) ||
       Boolean(pendingQuestionnaire),
+    onCyclePermissionMode: () => {
+      void cyclePermissionMode().then((next) => {
+        pushToast(`已切换执行模式：${PERMISSION_MODE_META[next].label}`, "info", {
+          durationMs: 2200,
+        });
+      });
+    },
     onToggleSidebar: handleToggleSidebar,
     onTogglePreview: () => {
       if (!previewOpen && !activePreviewPath && files.length > 0) {
@@ -379,6 +392,7 @@ export function AppShell() {
       <SettingsModal />
       <ApprovalDialog />
       <QuestionnaireDialog />
+      <DiffReviewModal />
       <CommandPalette />
       <ShortcutHelpModal />
     </div>

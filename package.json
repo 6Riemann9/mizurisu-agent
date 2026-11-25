@@ -1,7 +1,7 @@
 {
   "name": "mizurisu-agent",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mizurisu Agent — 面向 Mizurisu / New-API 的纯本机跨形态三端 Office Agent 工作台（Web / Desktop / Mobile）",
   "license": "MIT",
   "packageManager": "pnpm@10.0.0",

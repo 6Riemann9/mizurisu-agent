@@ -4,12 +4,14 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Compass,
   Copy,
   ExternalLink,
   FileOutput,
   GitBranch,
   Paperclip,
   Pencil,
+  Play,
   RotateCcw,
   Settings,
   X,
@@ -308,10 +310,12 @@ export function MessageItem({ message }: { message: UiMessage }) {
 
   const {
     config,
+    settings,
     openPreview,
     branchFromMessage,
     editAndResendMessage,
     regenerateMessage,
+    approvePlanAndExecute,
     setSettingsOpen,
     pushToast,
     isStreaming,
@@ -618,6 +622,38 @@ export function MessageItem({ message }: { message: UiMessage }) {
               <span>Mizurisu Agent 正在处理...</span>
             </div>
           )}
+
+          {!message.isStreaming &&
+            message.planMode &&
+            message.content &&
+            !message.errorMessage &&
+            (settings.permissionMode ?? "auto-edits") === "plan" && (
+              <div className="mt-3 rounded-lg border border-[var(--accent)]/35 bg-[var(--accent-soft)]/50 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0 text-[12px]">
+                  <Compass className="w-4 h-4 text-[var(--accent)] shrink-0" />
+                  <span className="text-[var(--text-primary)] truncate">
+                    以上为 <strong>Plan 只读规划方案</strong>，尚未改动工作区文件
+                  </span>
+                </div>
+                <Button
+                  variant="primary"
+                  size="xs"
+                  disabled={isStreaming}
+                  onClick={() => {
+                    void approvePlanAndExecute().catch((err) => {
+                      pushToast(
+                        err instanceof Error ? err.message : String(err),
+                        "error"
+                      );
+                    });
+                  }}
+                  className="text-[11.5px] shrink-0"
+                >
+                  <Play className="w-3 h-3" />
+                  <span>批准并开始执行</span>
+                </Button>
+              </div>
+            )}
 
           {!message.isStreaming && (
             <div className="mt-2.5 pt-2 border-t border-[var(--border-hairline)]/60 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--text-muted)]">

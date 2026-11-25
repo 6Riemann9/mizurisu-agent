@@ -1,10 +1,11 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { Check, ChevronDown, Cpu, Search, Star } from "lucide-react";
+import { Check, ChevronDown, Compass, Cpu, Flame, PenLine, Search, Shield, Star } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { PERMISSION_MODE_META, PERMISSION_MODE_ORDER } from "../../agent/permission";
 import { PROVIDER_GROUP_LABELS, inferModelMetadata } from "../../newapi/client";
 import { useAppStore } from "../../store/useAppStore";
-import type { ModelInfo, ProviderGroup } from "../../types";
-import { Button, Tooltip, cn } from "../ui";
+import type { ModelInfo, PermissionMode, ProviderGroup } from "../../types";
+import { Button, Kbd, Tooltip, cn } from "../ui";
 
 const THINKING_OPTIONS: Array<{ value: ThinkingLevel; label: string; desc: string }> = [
   { value: "off", label: "关闭", desc: "直接响应" },
@@ -123,24 +124,31 @@ export function ComposerControls({ className }: { className?: string }) {
     models,
     updateConfig,
     updateSettings,
+    setPermissionMode,
     toggleFavoriteModel,
   } = useAppStore();
 
+  const [modePickerOpen, setModePickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [thinkingPickerOpen, setThinkingPickerOpen] = useState(false);
   const [search, setSearch] = useState("");
 
+  const modeRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const thinkingRef = useRef<HTMLDivElement>(null);
+  const modeTriggerRef = useRef<HTMLButtonElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const thinkingTriggerRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // 点击外部自动收起浮层
   useEffect(() => {
-    if (!modelPickerOpen && !thinkingPickerOpen) return;
+    if (!modePickerOpen && !modelPickerOpen && !thinkingPickerOpen) return;
     const onDocClick = (e: MouseEvent) => {
       const target = e.target as Node;
+      if (modePickerOpen && modeRef.current && !modeRef.current.contains(target)) {
+        setModePickerOpen(false);
+      }
       if (modelPickerOpen && pickerRef.current && !pickerRef.current.contains(target)) {
         setModelPickerOpen(false);
         setSearch("");
@@ -155,15 +163,19 @@ export function ComposerControls({ className }: { className?: string }) {
     };
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
-  }, [modelPickerOpen, thinkingPickerOpen]);
+  }, [modePickerOpen, modelPickerOpen, thinkingPickerOpen]);
 
   // Esc 快捷键关闭浮层并将焦点还原至对应触发微胶囊
   useEffect(() => {
-    if (!modelPickerOpen && !thinkingPickerOpen) return;
+    if (!modePickerOpen && !modelPickerOpen && !thinkingPickerOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopPropagation();
+      if (modePickerOpen) {
+        setModePickerOpen(false);
+        modeTriggerRef.current?.focus();
+      }
       if (modelPickerOpen) {
         setModelPickerOpen(false);
         setSearch("");
@@ -176,7 +188,7 @@ export function ComposerControls({ className }: { className?: string }) {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [modelPickerOpen, thinkingPickerOpen]);
+  }, [modePickerOpen, modelPickerOpen, thinkingPickerOpen]);
 
   // 打开模型选择器时聚焦搜索框
   useEffect(() => {
@@ -244,6 +256,22 @@ export function ComposerControls({ className }: { className?: string }) {
   const currentThinkingLabel =
     THINKING_OPTIONS.find((opt) => opt.value === config.thinkingLevel)?.label ?? "中";
 
+  const currentMode: PermissionMode = settings.permissionMode ?? "auto-edits";
+  const modeMeta = PERMISSION_MODE_META[currentMode];
+
+  const renderModeIcon = (mode: PermissionMode, cls = "w-3 h-3 shrink-0") => {
+    switch (mode) {
+      case "plan":
+        return <Compass className={cls} />;
+      case "ask":
+        return <Shield className={cls} />;
+      case "full-auto":
+        return <Flame className={cls} />;
+      default:
+        return <PenLine className={cls} />;
+    }
+  };
+
   const handleSelectModel = (modelId: string) => {
     updateConfig({ selectedModelId: modelId });
     setModelPickerOpen(false);
@@ -252,6 +280,108 @@ export function ComposerControls({ className }: { className?: string }) {
 
   return (
     <div className={cn("flex items-center gap-1 min-w-0", className)}>
+      {/* 执行权限模式微胶囊（Claude Code Desktop 风格：Plan / Ask / Auto Edits / Full Auto） */}
+      <div className="relative shrink-0" ref={modeRef}>
+        <Tooltip
+          content={`${modeMeta.label} · ${modeMeta.description}`}
+          shortcut={["Shift", "Tab"]}
+          side="top"
+          disabled={modePickerOpen}
+        >
+          <Button
+            ref={modeTriggerRef}
+            variant="ghost"
+            size="xs"
+            aria-label={`切换执行模式（当前：${modeMeta.label}）`}
+            aria-expanded={modePickerOpen}
+            aria-haspopup="menu"
+            onClick={() => {
+              setModelPickerOpen(false);
+              setThinkingPickerOpen(false);
+              setModePickerOpen((prev) => !prev);
+            }}
+            className={cn(
+              "h-6 px-2 rounded-full border text-[11.5px]",
+              currentMode === "plan"
+                ? "border-[var(--accent)]/45 bg-[var(--accent-soft)] text-[var(--accent)] font-linear-medium"
+                : currentMode === "full-auto"
+                  ? "border-[var(--status-warning)]/45 bg-[var(--status-warning)]/10 text-[var(--status-warning)] font-linear-medium"
+                  : "border-[var(--border-hairline)] bg-[var(--surface-subtle)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            )}
+          >
+            {renderModeIcon(currentMode)}
+            <span className="truncate max-w-[82px]">{modeMeta.shortLabel}</span>
+            <ChevronDown
+              className={cn(
+                "w-3 h-3 opacity-70 shrink-0 transition-transform duration-150",
+                modePickerOpen && "rotate-180"
+              )}
+            />
+          </Button>
+        </Tooltip>
+
+        {modePickerOpen && (
+          <div
+            role="menu"
+            aria-label="选择执行权限模式"
+            className="absolute left-0 bottom-full mb-1.5 w-[min(300px,calc(100vw-2rem))] rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] shadow-[var(--shadow-popover)] p-1 z-50"
+          >
+            <div className="px-2 py-1 text-[10px] font-linear-medium uppercase tracking-wider text-[var(--text-muted)] border-b border-[var(--border-hairline)] mb-1 flex items-center justify-between gap-2">
+              <span>执行权限模式</span>
+              <Kbd keys={["Shift", "Tab"]} />
+            </div>
+            <div className="space-y-0.5">
+              {PERMISSION_MODE_ORDER.map((m) => {
+                const meta = PERMISSION_MODE_META[m];
+                const active = currentMode === m;
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={active}
+                    onClick={() => {
+                      void setPermissionMode(m);
+                      setModePickerOpen(false);
+                    }}
+                    className={cn(
+                      "w-full px-2 py-1.5 rounded-md flex items-start justify-between gap-2 text-left transition cursor-pointer linear-focus-ring",
+                      active
+                        ? "bg-[var(--bg-active)] text-[var(--text-primary)]"
+                        : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                    )}
+                  >
+                    <span className="flex items-start gap-2 min-w-0">
+                      <span
+                        className={cn(
+                          "mt-0.5 shrink-0",
+                          m === "plan"
+                            ? "text-[var(--accent)]"
+                            : m === "full-auto"
+                              ? "text-[var(--status-warning)]"
+                              : "text-[var(--text-muted)]"
+                        )}
+                      >
+                        {renderModeIcon(m, "w-3.5 h-3.5")}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-[12px] font-linear-medium leading-snug">
+                          {meta.label}
+                        </span>
+                        <span className="block text-[10.5px] text-[var(--text-muted)] leading-snug mt-0.5">
+                          {meta.description}
+                        </span>
+                      </span>
+                    </span>
+                    {active && <Check className="w-3.5 h-3.5 text-[var(--accent)] shrink-0 mt-0.5" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* 模型选择微胶囊 + 向上弹出浮层 */}
       <div className="relative min-w-0" ref={pickerRef}>
         <Tooltip

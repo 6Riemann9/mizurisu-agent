@@ -175,6 +175,7 @@ export interface QuestionnaireQuestion {
 
 export interface QuestionnaireRequest {
   id: string;
+  sessionId?: string;
   title?: string;
   questions: QuestionnaireQuestion[];
   resolve: (answers: Record<string, string[]> | null) => void;
@@ -224,6 +225,26 @@ export interface MessageUsage {
   totalTokens: number;
 }
 
+export type PermissionMode = "plan" | "ask" | "auto-edits" | "full-auto";
+
+export interface SessionFileChange {
+  path: string;
+  action: "created" | "modified" | "deleted";
+  toolName: string;
+  summary?: string;
+  beforeSnapshotId?: string;
+  existedBefore: boolean;
+  updatedAt: number;
+  reviewed?: "accepted" | "reverted";
+}
+
+export interface QueuedMessageItem {
+  id: string;
+  text: string;
+  attachmentPaths: string[];
+  createdAt: number;
+}
+
 export interface UiMessage {
   id: string;
   role: "user" | "assistant";
@@ -236,6 +257,8 @@ export interface UiMessage {
   usage?: MessageUsage;
   modelId?: string;
   errorMessage?: string;
+  /** 本条助手回复是否在 Plan 只读规划模式下生成（供 UI 渲染批准执行按钮） */
+  planMode?: boolean;
   createdAt: number;
   isStreaming?: boolean;
 }
@@ -251,15 +274,19 @@ export interface ChatSession {
   workspaceId?: string;
   /** 会话级任务进度清单（pi-todo-list） */
   todos?: TodoItem[];
+  /** 本会话 Agent 变更的工作区文件清单（用于 Diff Review 与一键接受/回滚） */
+  fileChanges?: SessionFileChange[];
 }
 
 export interface ApprovalRequest {
   id: string;
+  sessionId?: string;
   toolName: string;
   title: string;
   description: string;
   argsPreview: string;
-  resolve: (approved: boolean) => void;
+  allowSessionToolOption?: boolean;
+  resolve: (approved: boolean, options?: { rememberForSession?: boolean }) => void;
 }
 
 export interface SkillTemplate {
@@ -293,6 +320,8 @@ export interface AppSettings {
   protectedPaths?: string[];
   /** 已配置的 Remote MCP 服务器列表 */
   mcpServers?: McpServerConfig[];
+  /** 当前默认工具权限执行模式（默认 auto-edits） */
+  permissionMode?: PermissionMode;
   /** 可选自定义免费 SearXNG 搜索实例地址 */
   customSearxngUrl?: string;
   /** 可选 Web 端无 CORS 网页抓取代理地址 */

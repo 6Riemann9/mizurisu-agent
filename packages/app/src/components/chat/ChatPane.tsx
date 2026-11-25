@@ -1,6 +1,10 @@
 import {
   AlertCircle,
+  CheckCheck,
+  Clock,
+  Compass,
   ExternalLink,
+  FileDiff,
   FileSpreadsheet,
   FileText,
   FileType,
@@ -10,9 +14,11 @@ import {
   Settings2,
   Sparkles,
   Square,
+  Terminal,
   Upload,
   Wand2,
   X,
+  Zap,
 } from "lucide-react";
 import {
   useCallback,
@@ -23,7 +29,14 @@ import {
   type ClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import { PERMISSION_MODE_META } from "../../agent/permission";
+import { buildInitInstructionsPrompt } from "../../agent/project-instructions";
 import { BUILTIN_SKILLS } from "../../agent/skills";
+import {
+  filterSlashCommands,
+  parseSlashInput,
+  type SlashCommandSpec,
+} from "../../agent/slash-commands";
 import {
   DEFAULT_BRAND_NAME,
   classifyApiError,
@@ -125,10 +138,21 @@ export function ChatPane({
     customSkills,
     activeSkillId,
     composerDraft,
+    queuedMessagesBySession,
     sendMessage,
     abortRun,
+    createSession,
     uploadFilesToWorkspace,
     setActiveSkill,
+    setPermissionMode,
+    cyclePermissionMode,
+    setDiffReviewOpen,
+    acceptAllSessionFileChanges,
+    enqueueMessage,
+    removeQueuedMessage,
+    sendQueuedMessageNow,
+    compactActiveSession,
+    openOrCreateProjectInstructions,
     setSettingsOpen,
     dismissOnboarding,
     clearComposerDraft,
@@ -142,6 +166,10 @@ export function ChatPane({
   const [attachedPaths, setAttachedPaths] = useState<string[]>([]);
   const [attachedImages, setAttachedImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<Array<{ file: File; url: string }>>([]);
+  const [pastedSnippets, setPastedSnippets] = useState<
+    Array<{ id: string; text: string; lines: number }>
+  >([]);
+  const [previewSnippetId, setPreviewSnippetId] = useState<string | null>(null);
   const [errorTip, setErrorTip] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -258,6 +286,11 @@ export function ChatPane({
     );
   }, [activeTrigger, files]);
 
+  const filteredSlashCommands = useMemo<SlashCommandSpec[]>(() => {
+    if (!activeTrigger || activeTrigger.kind !== "skill") return [];
+    return filterSlashCommands(activeTrigger.query);
+  }, [activeTrigger]);
+
   const filteredSkills = useMemo<SkillTemplate[]>(() => {
     if (!activeTrigger || activeTrigger.kind !== "skill") return [];
     const q = activeTrigger.query.trim().toLowerCase();
@@ -275,7 +308,7 @@ export function ChatPane({
     activeTrigger?.kind === "file"
       ? filteredFiles.length
       : activeTrigger?.kind === "skill"
-        ? filteredSkills.length
+        ? filteredSlashCommands.length + filteredSkills.length
         : 0;
 
   const clampedPopoverIndex =
@@ -303,7 +336,113 @@ export function ChatPane({
   }, [activeTrigger]);
 
   const canSend = Boolean(
-    input.trim() || attachedImages.length > 0 || attachedPaths.length > 0
+    input.trim() ||
+      attachedImages.length > 0 ||
+      attachedPaths.length > 0 ||
+      pastedSnippets.length > 0
+  );
+
+  const executeSlashCommand = useCallback(
+    async (cmd: SlashCommandSpec, arg: string) => {
+      switch (cmd.name) {
+        case "plan": {
+          await setPermissionMode("plan");
+          if (arg) {
+            await sendMessage(arg, [], []);
+          } else {
+            pushToast("已切换至 Plan 只读规划模式", "info");
+          }
+          break;
+        }
+        case "ask": {
+          await setPermissionMode("ask");
+          if (arg) {
+            await sendMessage(arg, [], []);
+          } else {
+            pushToast("已切换至 Ask 每次询问模式", "info");
+          }
+          break;
+        }
+        case "auto": {
+          const mode = arg.toLowerCase() === "full" ? "full-auto" : "auto-edits";
+          await setPermissionMode(mode);
+          pushToast(`已切换至 ${PERMISSION_MODE_META[mode].label}`, "info");
+          break;
+        }
+        case "diff": {
+          setDiffReviewOpen(true);
+          break;
+        }
+        case "compact": {
+          pushToast("正在压缩当前会话上下文...", "info", { durationMs: 2500 });
+          await compactActiveSession();
+          break;
+        }
+        case "clear": {
+          await createSession();
+          pushToast("已开启空白新会话", "info");
+          break;
+        }
+        case "memory": {
+          await openOrCreateProjectInstructions();
+          break;
+        }
+        case "init": {
+          const prompt = buildInitInstructionsPrompt(files);
+          await sendMessage(prompt, [], []);
+          break;
+        }
+        case "review": {
+          const activeFiles = (session?.fileChanges || [])
+            .filter((fc) => fc.reviewed !== "reverted")
+            .map((fc) => `- ${fc.path} (${fc.action})`)
+            .join("\n");
+          const focusNote = arg ? `\n重点关注：${arg}` : "";
+          const reviewPrompt = activeFiles
+            ? `请对本会话修改的工作区文件进行一次只读质量复核，核对数值口径、结构完整性与潜在疏漏：\n${activeFiles}${focusNote}`
+            : `请使用只读工具检查当前工作区主要文档的内容完整性、数据口径与排版规范，并给出核查报告。${focusNote}`;
+          await sendMessage(reviewPrompt, [], []);
+          break;
+        }
+      }
+    },
+    [
+      compactActiveSession,
+      createSession,
+      files,
+      openOrCreateProjectInstructions,
+      pushToast,
+      sendMessage,
+      session?.fileChanges,
+      setDiffReviewOpen,
+      setPermissionMode,
+    ]
+  );
+
+  const handleSelectSlashCommand = useCallback(
+    (cmd: SlashCommandSpec) => {
+      if (!activeTrigger || activeTrigger.kind !== "skill") return;
+      setPopoverIndex(0);
+      setDismissedAnchor(null);
+      if (cmd.name === "plan" || cmd.name === "review") {
+        // 切换模式或预置命令前缀，方便用户紧接着输入任务描述
+        if (cmd.name === "plan") {
+          void setPermissionMode("plan");
+          pushToast("已进入 Plan 只读规划模式，请输入需求或直接回车", "info");
+        }
+        const nextText = `/${cmd.name} `;
+        setInput(nextText);
+        setCursorPos(nextText.length);
+        focusTextareaAt(nextText.length);
+        return;
+      }
+      setInput("");
+      setCursorPos(0);
+      void executeSlashCommand(cmd, "").catch((err) => {
+        pushToast(err instanceof Error ? err.message : String(err), "error");
+      });
+    },
+    [activeTrigger, executeSlashCommand, focusTextareaAt, pushToast, setPermissionMode]
   );
 
   const handleSelectFileItem = useCallback(
@@ -385,11 +524,33 @@ export function ChatPane({
     focusTextareaAt(1);
   };
 
-  const handleSend = async (customText?: string) => {
-    const text = (customText ?? input).trim();
+  const handleSend = async (customText?: string, sendOpts?: { forceQueue?: boolean }) => {
+    const rawTyped = (customText ?? input).trim();
+    const snippetTexts = customText ? [] : pastedSnippets.map((s) => s.text);
+    const text = [...snippetTexts, rawTyped].filter(Boolean).join("\n\n").trim();
     const paths = [...attachedPaths];
     const imgs = [...attachedImages];
+    const prevSnippets = customText ? [] : [...pastedSnippets];
     if (!text && paths.length === 0 && imgs.length === 0) return;
+
+    // 优先解析内置可执行 /slash 命令
+    const slashMatched = parseSlashInput(text);
+    if (slashMatched && paths.length === 0 && imgs.length === 0) {
+      setErrorTip(null);
+      if (!customText) {
+        setInput("");
+        setCursorPos(0);
+        setDismissedAnchor(null);
+        setPopoverIndex(0);
+        setPastedSnippets([]);
+      }
+      try {
+        await executeSlashCommand(slashMatched.command, slashMatched.arg);
+      } catch (err) {
+        setErrorTip(err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
 
     setErrorTip(null);
     if (!customText) {
@@ -397,16 +558,26 @@ export function ChatPane({
       setCursorPos(0);
       setDismissedAnchor(null);
       setPopoverIndex(0);
+      setPastedSnippets([]);
+      setPreviewSnippetId(null);
     }
     setAttachedPaths([]);
     setAttachedImages([]);
+
+    if (isStreaming && sendOpts?.forceQueue) {
+      enqueueMessage(text, paths);
+      return;
+    }
 
     try {
       await sendMessage(text, paths, imgs);
     } catch (err) {
       if (!customText) {
-        if (text) {
-          setInput((prev) => prev || text);
+        if (rawTyped) {
+          setInput((prev) => prev || rawTyped);
+        }
+        if (prevSnippets.length > 0) {
+          setPastedSnippets(prevSnippets);
         }
         if (paths.length > 0) {
           setAttachedPaths((prev) => [...new Set([...paths, ...prev])]);
@@ -468,6 +639,25 @@ export function ChatPane({
       }
       setAttachedImages((prev) => [...prev, ...pastedImages]);
       pushToast(`已从剪贴板附加 ${pastedImages.length} 张图片`, "info");
+      return;
+    }
+
+    // 超长文本（>500 字符或 >=10 行）自动折叠为上下文芯片，保持输入框清爽
+    const plain = e.clipboardData.getData("text/plain");
+    if (plain) {
+      const lineCount = plain.split(/\r?\n/).length;
+      if (plain.length > 500 || lineCount >= 10) {
+        e.preventDefault();
+        const snippetId = `snip_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        setPastedSnippets((prev) => [
+          ...prev,
+          { id: snippetId, text: plain, lines: lineCount },
+        ]);
+        pushToast(
+          `长文本已折叠为芯片（${plain.length} 字 · ${lineCount} 行），发送时自动拼接`,
+          "info"
+        );
+      }
     }
   };
 
@@ -476,7 +666,18 @@ export function ChatPane({
       return;
     }
 
-    // 当 @ 文件或 / 技能浮层处于打开态时，优先接管导航与确认按键，绝不误发送消息
+    // Shift + Tab：循环切换执行权限模式（Plan -> Ask -> Auto Edits -> Full Auto）
+    if (e.key === "Tab" && e.shiftKey) {
+      e.preventDefault();
+      void cyclePermissionMode().then((next) => {
+        pushToast(`已切换执行模式：${PERMISSION_MODE_META[next].label}`, "info", {
+          durationMs: 2200,
+        });
+      });
+      return;
+    }
+
+    // 当 @ 文件或 / 命令技能浮层处于打开态时，优先接管导航与确认按键，绝不误发送消息
     if (activeTrigger) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -496,11 +697,16 @@ export function ChatPane({
         e.preventDefault();
         if (activeTrigger.kind === "file" && filteredFiles[clampedPopoverIndex]) {
           handleSelectFileItem(filteredFiles[clampedPopoverIndex]);
-        } else if (
-          activeTrigger.kind === "skill" &&
-          filteredSkills[clampedPopoverIndex]
-        ) {
-          handleSelectSkillItem(filteredSkills[clampedPopoverIndex]);
+        } else if (activeTrigger.kind === "skill") {
+          const cmdLen = filteredSlashCommands.length;
+          if (clampedPopoverIndex < cmdLen && filteredSlashCommands[clampedPopoverIndex]) {
+            handleSelectSlashCommand(filteredSlashCommands[clampedPopoverIndex]);
+          } else {
+            const skillIdx = clampedPopoverIndex - cmdLen;
+            if (filteredSkills[skillIdx]) {
+              handleSelectSkillItem(filteredSkills[skillIdx]);
+            }
+          }
         }
         return;
       }
@@ -512,10 +718,19 @@ export function ChatPane({
       }
     }
 
+    // 运行中按 Alt + Enter 加入排队队列，等待当前轮次完成自动发送
+    if (e.key === "Enter" && e.altKey && isStreaming) {
+      e.preventDefault();
+      if (canSend) {
+        void handleSend(undefined, { forceQueue: true });
+      }
+      return;
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (canSend) {
-        handleSend();
+        void handleSend();
       }
     }
   };
@@ -526,6 +741,12 @@ export function ChatPane({
 
   const errorDiagnosis = errorTip ? classifyApiError(errorTip, config.baseUrl) : null;
   const consoleLinks = getMizurisuConsoleLinks(config.baseUrl);
+  const currentMode = settings.permissionMode ?? "auto-edits";
+  const activeQueue = session ? queuedMessagesBySession[session.id] || [] : [];
+  const activeFileChanges = (session?.fileChanges || []).filter(
+    (fc) => fc.reviewed !== "reverted"
+  );
+  const unreviewedCount = activeFileChanges.filter((fc) => !fc.reviewed).length;
 
   return (
     <div
@@ -566,6 +787,60 @@ export function ChatPane({
             <Settings2 className="w-3 h-3 text-[var(--text-muted)]" />
             <span>配置连接</span>
           </Button>
+        </div>
+      )}
+
+      {/* 本会话文件变更汇总审查条（Claude Code Desktop Diff Review 入口） */}
+      {activeFileChanges.length > 0 && (
+        <div className="px-4 py-1.5 border-b border-[var(--border-hairline)] bg-[var(--bg-surface)] flex flex-wrap items-center justify-between gap-2 text-[11.5px] shrink-0">
+          <div className="flex items-center gap-2 min-w-0 text-[var(--text-secondary)]">
+            <FileDiff className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+            <span className="truncate">
+              本会话已变更 <strong className="font-mono text-[var(--text-primary)]">{activeFileChanges.length}</strong> 个文件
+              {unreviewedCount > 0 ? `（${unreviewedCount} 项待审）` : "（已全部确认）"}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => setDiffReviewOpen(true)}
+              className="h-6 px-2 text-[11px]"
+            >
+              <FileDiff className="w-3 h-3 text-[var(--accent)]" />
+              <span>审查 Diff</span>
+            </Button>
+            {unreviewedCount > 0 && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => void acceptAllSessionFileChanges()}
+                className="h-6 px-2 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              >
+                <CheckCheck className="w-3 h-3 text-[var(--status-success)]" />
+                <span>全部保留</span>
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Plan 只读模式提示薄条 */}
+      {currentMode === "plan" && (
+        <div className="px-4 py-1 border-b border-[var(--accent)]/25 bg-[var(--accent-soft)]/45 flex items-center justify-between gap-2 text-[11px] text-[var(--accent)] shrink-0">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Compass className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">
+              <strong>Plan 只读规划模式</strong>：Agent 仅调研输出方案，不会修改或删除任何文件（按 Shift+Tab 可切换）
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void setPermissionMode("auto-edits")}
+            className="shrink-0 underline underline-offset-2 hover:opacity-80 cursor-pointer"
+          >
+            切回执行模式
+          </button>
         </div>
       )}
 
@@ -708,7 +983,53 @@ export function ChatPane({
             </div>
           )}
 
-          {(activeSkill || attachedPaths.length > 0 || imagePreviews.length > 0) && (
+          {/* 运行中消息排队列表（Queue） */}
+          {activeQueue.length > 0 && (
+            <div className="mb-2 space-y-1">
+              {activeQueue.map((qItem, idx) => (
+                <div
+                  key={qItem.id}
+                  className="px-2.5 py-1.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] flex items-center justify-between gap-2 text-[11.5px]"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Clock className="w-3 h-3 text-[var(--accent)] shrink-0" />
+                    <span className="text-[10px] font-mono px-1 py-px rounded bg-[var(--accent-soft)] text-[var(--accent)] shrink-0">
+                      排队 #{idx + 1}
+                    </span>
+                    <span className="truncate text-[var(--text-primary)]">
+                      {qItem.text || `附带 ${qItem.attachmentPaths.length} 个文件`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Tooltip content="转为立即插话引导" side="top">
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => void sendQueuedMessageNow(qItem.id, session?.id)}
+                        className="h-5 px-1.5 text-[10.5px] text-[var(--accent)]"
+                      >
+                        <Zap className="w-3 h-3" />
+                        <span>立即插话</span>
+                      </Button>
+                    </Tooltip>
+                    <Tooltip content="移除排队" side="top">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => removeQueuedMessage(qItem.id, session?.id)}
+                        aria-label="移除排队消息"
+                        className="size-5 text-[var(--text-muted)] hover:text-[var(--status-danger)]"
+                      >
+                        <X className="w-3 h-3" />
+                      </Button>
+                    </Tooltip>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {(activeSkill || attachedPaths.length > 0 || imagePreviews.length > 0 || pastedSnippets.length > 0) && (
             <div className="mb-2 space-y-1.5">
               {imagePreviews.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2">
@@ -741,45 +1062,93 @@ export function ChatPane({
                 </div>
               )}
 
-              {(activeSkill || attachedPaths.length > 0) && (
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {activeSkill && (
-                    <span className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-md border border-[var(--border-strong)] bg-[var(--accent-soft)] text-[var(--text-primary)]">
-                      <Wand2 className="w-3 h-3 text-[var(--accent)]" />
-                      <span className="font-linear-medium">{activeSkill.name}</span>
-                      <Tooltip content="取消挂载技能" side="top">
-                        <button
-                          type="button"
-                          onClick={() => setActiveSkill(undefined)}
-                          aria-label={`取消挂载技能 ${activeSkill.name}`}
-                          className="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer linear-focus-ring rounded"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </Tooltip>
-                    </span>
-                  )}
-                  {attachedPaths.map((p) => (
-                    <span
-                      key={p}
-                      className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-md bg-[var(--bg-surface)] border border-[var(--border-hairline)] text-[var(--text-secondary)]"
-                    >
-                      <FileText className="w-3 h-3 text-[var(--text-muted)]" />
-                      <span className="font-mono">{p}</span>
-                      <Tooltip content={`移除附件 ${p}`} side="top">
+              {(activeSkill || attachedPaths.length > 0 || pastedSnippets.length > 0) && (
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {activeSkill && (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-md border border-[var(--border-strong)] bg-[var(--accent-soft)] text-[var(--text-primary)]">
+                        <Wand2 className="w-3 h-3 text-[var(--accent)]" />
+                        <span className="font-linear-medium">{activeSkill.name}</span>
+                        <Tooltip content="取消挂载技能" side="top">
+                          <button
+                            type="button"
+                            onClick={() => setActiveSkill(undefined)}
+                            aria-label={`取消挂载技能 ${activeSkill.name}`}
+                            className="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer linear-focus-ring rounded"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </Tooltip>
+                      </span>
+                    )}
+                    {attachedPaths.map((p) => (
+                      <span
+                        key={p}
+                        className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-md bg-[var(--bg-surface)] border border-[var(--border-hairline)] text-[var(--text-secondary)]"
+                      >
+                        <FileText className="w-3 h-3 text-[var(--text-muted)]" />
+                        <span className="font-mono">{p}</span>
+                        <Tooltip content={`移除附件 ${p}`} side="top">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setAttachedPaths((prev) => prev.filter((x) => x !== p))
+                            }
+                            aria-label={`移除附件 ${p}`}
+                            className="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer linear-focus-ring rounded"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </Tooltip>
+                      </span>
+                    ))}
+                    {pastedSnippets.map((snip) => (
+                      <span
+                        key={snip.id}
+                        className="inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-md bg-[var(--bg-surface)] border border-[var(--accent)]/35 text-[var(--text-primary)]"
+                      >
                         <button
                           type="button"
                           onClick={() =>
-                            setAttachedPaths((prev) => prev.filter((x) => x !== p))
+                            setPreviewSnippetId((cur) => (cur === snip.id ? null : snip.id))
                           }
-                          aria-label={`移除附件 ${p}`}
-                          className="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer linear-focus-ring rounded"
+                          className="inline-flex items-center gap-1 cursor-pointer hover:text-[var(--accent)]"
                         >
-                          <X className="w-3 h-3" />
+                          <FileText className="w-3 h-3 text-[var(--accent)]" />
+                          <span>
+                            长文本片段 ({snip.text.length} 字 · {snip.lines} 行)
+                          </span>
                         </button>
-                      </Tooltip>
-                    </span>
-                  ))}
+                        <Tooltip content="移除长文本片段" side="top">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPastedSnippets((prev) =>
+                                prev.filter((s) => s.id !== snip.id)
+                              );
+                              if (previewSnippetId === snip.id) setPreviewSnippetId(null);
+                            }}
+                            aria-label="移除长文本片段"
+                            className="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer linear-focus-ring rounded"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </Tooltip>
+                      </span>
+                    ))}
+                  </div>
+                  {previewSnippetId &&
+                    (() => {
+                      const targetSnip = pastedSnippets.find(
+                        (s) => s.id === previewSnippetId
+                      );
+                      if (!targetSnip) return null;
+                      return (
+                        <pre className="p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[11px] font-mono text-[var(--text-secondary)] max-h-36 overflow-auto whitespace-pre-wrap">
+                          {targetSnip.text}
+                        </pre>
+                      );
+                    })()}
                 </div>
               )}
             </div>
@@ -805,7 +1174,7 @@ export function ChatPane({
                   <span className="font-linear-medium text-[var(--text-secondary)]">
                     {activeTrigger.kind === "file"
                       ? "引用工作区文件"
-                      : "选择办公技能"}
+                      : "系统命令 / 办公技能"}
                   </span>
                   <span className="hidden sm:inline tabular-nums">
                     ↑↓ 选择 · Enter/Tab 确认 · Esc 关闭
@@ -814,7 +1183,7 @@ export function ChatPane({
 
                 <div
                   ref={popoverListRef}
-                  className="max-h-56 overflow-y-auto p-1 space-y-0.5"
+                  className="max-h-64 overflow-y-auto p-1 space-y-0.5"
                 >
                   {activeTrigger.kind === "file" ? (
                     filteredFiles.length === 0 ? (
@@ -875,57 +1244,117 @@ export function ChatPane({
                         );
                       })
                     )
-                  ) : filteredSkills.length === 0 ? (
+                  ) : filteredSlashCommands.length === 0 && filteredSkills.length === 0 ? (
                     <div className="py-5 text-center text-[12px] text-[var(--text-muted)]">
-                      未匹配到办公技能，按 Esc 关闭后可直接输入提问
+                      未匹配到系统命令或办公技能，按 Esc 关闭后可直接输入提问
                     </div>
                   ) : (
-                    filteredSkills.map((skill, idx) => {
-                      const selected = idx === clampedPopoverIndex;
-                      const mounted = skill.id === activeSkillId;
-                      return (
-                        <button
-                          key={skill.id}
-                          type="button"
-                          role="option"
-                          aria-selected={selected}
-                          data-popover-idx={idx}
-                          onMouseEnter={() => setPopoverIndex(idx)}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            handleSelectSkillItem(skill);
-                          }}
-                          className={cn(
-                            "w-full min-h-[28px] px-2 py-1 rounded-md flex items-center justify-between gap-2 text-left text-[12px] transition-colors cursor-pointer",
-                            selected
-                              ? "bg-[var(--bg-active)] text-[var(--text-primary)]"
-                              : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                          )}
-                        >
-                          <span className="flex items-center gap-2 min-w-0 flex-1">
-                            <Wand2
-                              className={cn(
-                                "w-3.5 h-3.5 shrink-0",
-                                selected || mounted
-                                  ? "text-[var(--accent)]"
-                                  : "text-[var(--text-muted)]"
-                              )}
-                            />
-                            <span className="font-linear-medium text-[var(--text-primary)] shrink-0">
-                              {skill.name}
-                            </span>
-                            <span className="text-[11px] text-[var(--text-muted)] truncate">
-                              {skill.description}
-                            </span>
-                          </span>
-                          {mounted && (
-                            <span className="text-[10px] px-1.5 py-px rounded border border-[var(--accent)]/35 bg-[var(--accent-soft)] text-[var(--accent)] shrink-0">
-                              已挂载
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })
+                    <>
+                      {filteredSlashCommands.length > 0 && (
+                        <div>
+                          <div className="px-2 py-0.5 text-[10px] font-linear-medium uppercase tracking-wider text-[var(--text-muted)]">
+                            系统命令（直接执行）
+                          </div>
+                          <div className="space-y-0.5">
+                            {filteredSlashCommands.map((cmd, idx) => {
+                              const selected = idx === clampedPopoverIndex;
+                              return (
+                                <button
+                                  key={`cmd-${cmd.name}`}
+                                  type="button"
+                                  role="option"
+                                  aria-selected={selected}
+                                  data-popover-idx={idx}
+                                  onMouseEnter={() => setPopoverIndex(idx)}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    handleSelectSlashCommand(cmd);
+                                  }}
+                                  className={cn(
+                                    "w-full min-h-[28px] px-2 py-1 rounded-md flex items-center justify-between gap-2 text-left text-[12px] transition-colors cursor-pointer",
+                                    selected
+                                      ? "bg-[var(--bg-active)] text-[var(--text-primary)]"
+                                      : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                                  )}
+                                >
+                                  <span className="flex items-center gap-2 min-w-0 flex-1">
+                                    <Terminal className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                                    <span className="font-mono font-linear-medium text-[var(--text-primary)] shrink-0">
+                                      {cmd.label}
+                                    </span>
+                                    <span className="text-[11px] text-[var(--text-muted)] truncate">
+                                      {cmd.description}
+                                    </span>
+                                  </span>
+                                  {cmd.usage && (
+                                    <span className="hidden sm:inline font-mono text-[10px] text-[var(--text-dim)] shrink-0">
+                                      {cmd.usage}
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {filteredSkills.length > 0 && (
+                        <div className={filteredSlashCommands.length > 0 ? "pt-1" : undefined}>
+                          <div className="px-2 py-0.5 text-[10px] font-linear-medium uppercase tracking-wider text-[var(--text-muted)]">
+                            办公技能（挂载模板）
+                          </div>
+                          <div className="space-y-0.5">
+                            {filteredSkills.map((skill, sIdx) => {
+                              const idx = filteredSlashCommands.length + sIdx;
+                              const selected = idx === clampedPopoverIndex;
+                              const mounted = skill.id === activeSkillId;
+                              return (
+                                <button
+                                  key={skill.id}
+                                  type="button"
+                                  role="option"
+                                  aria-selected={selected}
+                                  data-popover-idx={idx}
+                                  onMouseEnter={() => setPopoverIndex(idx)}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    handleSelectSkillItem(skill);
+                                  }}
+                                  className={cn(
+                                    "w-full min-h-[28px] px-2 py-1 rounded-md flex items-center justify-between gap-2 text-left text-[12px] transition-colors cursor-pointer",
+                                    selected
+                                      ? "bg-[var(--bg-active)] text-[var(--text-primary)]"
+                                      : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                                  )}
+                                >
+                                  <span className="flex items-center gap-2 min-w-0 flex-1">
+                                    <Wand2
+                                      className={cn(
+                                        "w-3.5 h-3.5 shrink-0",
+                                        selected || mounted
+                                          ? "text-[var(--accent)]"
+                                          : "text-[var(--text-muted)]"
+                                      )}
+                                    />
+                                    <span className="font-linear-medium text-[var(--text-primary)] shrink-0">
+                                      {skill.name}
+                                    </span>
+                                    <span className="text-[11px] text-[var(--text-muted)] truncate">
+                                      {skill.description}
+                                    </span>
+                                  </span>
+                                  {mounted && (
+                                    <span className="text-[10px] px-1.5 py-px rounded border border-[var(--accent)]/35 bg-[var(--accent-soft)] text-[var(--accent)] shrink-0">
+                                      已挂载
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -1023,31 +1452,49 @@ export function ChatPane({
 
               <div className="flex items-center gap-1.5 shrink-0 ml-auto">
                 {isStreaming && (
-                  <Tooltip content="立即中止当前生成" side="top">
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      onClick={() => abortRun()}
+                  <>
+                    <Tooltip content="立即中止当前生成" side="top">
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => abortRun()}
+                      >
+                        <Square className="w-3 h-3 fill-current" />
+                        <span>停止</span>
+                      </Button>
+                    </Tooltip>
+
+                    <Tooltip
+                      content="加入发送队列：等当前轮次结束后自动发出"
+                      shortcut={["Alt", "Enter"]}
+                      side="top"
                     >
-                      <Square className="w-3 h-3 fill-current" />
-                      <span>停止</span>
-                    </Button>
-                  </Tooltip>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={!canSend}
+                        onClick={() => void handleSend(undefined, { forceQueue: true })}
+                      >
+                        <Clock className="w-3 h-3 text-[var(--accent)]" />
+                        <span>排队</span>
+                      </Button>
+                    </Tooltip>
+                  </>
                 )}
 
                 <Tooltip
-                  content={isStreaming ? "发送插话引导" : "发送指令"}
+                  content={isStreaming ? "发送中途插话引导 (Steer)" : "发送指令"}
                   shortcut="Enter"
                   side="top"
                 >
                   <Button
                     variant="primary"
                     size="sm"
-                    onClick={() => handleSend()}
+                    onClick={() => void handleSend()}
                     disabled={!canSend}
                   >
                     <Send className="w-3 h-3" />
-                    <span>{isStreaming ? "插话引导" : "发送"}</span>
+                    <span>{isStreaming ? "插话" : "发送"}</span>
                     <span
                       aria-hidden="true"
                       className="hidden sm:inline text-[10px] font-mono opacity-65 leading-none"

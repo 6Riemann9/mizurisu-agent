@@ -1,6 +1,6 @@
 [package]
 name = "mizurisu-agent-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Mizurisu Agent — 面向 Mizurisu / New-API 的纯本机 Office Agent 桌面端"
 authors = ["Mizurisu Agent Contributors"]
 license = "MIT"

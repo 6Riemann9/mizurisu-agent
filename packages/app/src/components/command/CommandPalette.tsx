@@ -3,15 +3,18 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
+  Compass,
   Contrast,
   Cpu,
   Download,
   ExternalLink,
   Eye,
   EyeOff,
+  FileDiff,
   FileDown,
   FileText,
   FileType,
+  Flame,
   Keyboard,
   KeyRound,
   LogOut,
@@ -21,14 +24,19 @@ import {
   Moon,
   PanelLeft,
   PanelRight,
+  PenLine,
   RefreshCw,
+  ScrollText,
   Search,
   Settings,
+  Shield,
+  Sparkles,
   Sun,
   Trash2,
   Wand2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { PERMISSION_MODE_META, PERMISSION_MODE_ORDER } from "../../agent/permission";
 import { BUILTIN_SKILLS } from "../../agent/skills";
 import { maskApiKey } from "../../newapi/auth";
 import { getMizurisuConsoleLinks, inferModelMetadata } from "../../newapi/client";
@@ -115,6 +123,10 @@ export function CommandPalette() {
     deleteWorkspaceFile,
     exportWorkspaceFile,
     setActiveSkill,
+    setPermissionMode,
+    setDiffReviewOpen,
+    compactActiveSession,
+    openOrCreateProjectInstructions,
     switchActiveToken,
     refreshAccountSession,
     exportWorkspaceZip,
@@ -216,6 +228,36 @@ export function CommandPalette() {
     );
 
     const commands: CommandItem[] = [
+      {
+        id: "action:diff-review",
+        group: "快捷操作",
+        label: "审查本会话文件变更 (Diff Review)",
+        hint:
+          (activeSession?.fileChanges?.length || 0) > 0
+            ? `共 ${activeSession?.fileChanges?.length} 个文件变更`
+            : "对比本会话改前快照与回滚",
+        keywords: "diff review changes rollback 审查 差异 回滚 /diff",
+        icon: <FileDiff className="w-3.5 h-3.5" />,
+        run: () => setDiffReviewOpen(true),
+      },
+      {
+        id: "action:compact-session",
+        group: "快捷操作",
+        label: "压缩当前长对话历史 (/compact)",
+        hint: "提炼摘要并开启清爽延续会话",
+        keywords: "compact summarize handoff 压缩 上下文 摘要",
+        icon: <Sparkles className="w-3.5 h-3.5" />,
+        run: () => compactActiveSession(),
+      },
+      {
+        id: "action:project-instructions",
+        group: "快捷操作",
+        label: "打开 / 新建项目规范 (MIZURISU.md)",
+        hint: "工作区每次对话自动加载此规范",
+        keywords: "memory claude.md mizurisu.md rules 规范 记忆",
+        icon: <ScrollText className="w-3.5 h-3.5" />,
+        run: () => openOrCreateProjectInstructions(),
+      },
       {
         id: "action:new-session",
         group: "快捷操作",
@@ -424,6 +466,30 @@ export function CommandPalette() {
       run: () => logout(),
     });
 
+    for (const mode of PERMISSION_MODE_ORDER) {
+      const meta = PERMISSION_MODE_META[mode];
+      const active = (settings.permissionMode ?? "auto-edits") === mode;
+      const ModeIcon =
+        mode === "plan"
+          ? Compass
+          : mode === "ask"
+            ? Shield
+            : mode === "full-auto"
+              ? Flame
+              : PenLine;
+      commands.push({
+        id: `mode:${mode}`,
+        group: "切换执行权限模式",
+        label: meta.label,
+        hint: meta.description,
+        keywords: `mode permission ${mode} ${meta.label} 权限 模式`,
+        active,
+        shortcut: mode === "plan" ? ["Shift", "Tab"] : undefined,
+        icon: <ModeIcon className="w-3.5 h-3.5" />,
+        run: () => setPermissionMode(mode),
+      });
+    }
+
     for (const m of modelList) {
       const active = m.id === config.selectedModelId;
       commands.push({
@@ -497,6 +563,7 @@ export function CommandPalette() {
     settings.theme,
     settings.highContrast,
     settings.showNonChatModels,
+    settings.permissionMode,
     previewOpen,
     previewExpanded,
     activePreviewPath,
@@ -507,6 +574,10 @@ export function CommandPalette() {
     setPreviewOpen,
     setPreviewExpanded,
     setSettingsOpen,
+    setPermissionMode,
+    setDiffReviewOpen,
+    compactActiveSession,
+    openOrCreateProjectInstructions,
     refreshAccountSession,
     exportWorkspaceZip,
     exportSessionMarkdown,
@@ -516,6 +587,10 @@ export function CommandPalette() {
     updateConfig,
     openPreview,
     setActiveSkill,
+    setPermissionMode,
+    setDiffReviewOpen,
+    compactActiveSession,
+    openOrCreateProjectInstructions,
     switchActiveToken,
   ]);
 

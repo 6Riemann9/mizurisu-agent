@@ -105,6 +105,7 @@ export const protectedPathsExtension: MizurisuExtension = {
 
         runtimeCtx.requestApproval?.({
           id: toolCall.id,
+          sessionId: runtimeCtx.sessionId,
           toolName: toolCall.name,
           title: "受保护文件修改确认",
           description: `文件「${hit}」已被锁定保护。是否允许 ${toolCall.name} 修改或删除它？（建议优先拒绝并让 Agent 另存副本）`,
