@@ -35,6 +35,7 @@ import { workspaceVfs } from "../../storage/workspace-vfs";
 import { useAppStore } from "../../store/useAppStore";
 import type { ChatSession, WorkspaceFileMeta } from "../../types";
 import { FileIcon, formatFileSize } from "../common/FileBadge";
+import { Button, Kbd, Tooltip, cn } from "../ui";
 
 /** 生成工作区不重名的目标文件路径（如 新建表格.xlsx -> 新建表格_2.xlsx） */
 async function resolveUniqueWorkspacePath(
@@ -100,7 +101,8 @@ export function Sidebar({
   const createMenuRef = useRef<HTMLDivElement>(null);
   const [filesOpen, setFilesOpen] = useState(true);
   const [chatsOpen, setChatsOpen] = useState(true);
-  const [skillsOpen, setSkillsOpen] = useState(true);
+  // 默认折叠低频办公技能分组，减少首屏侧栏视觉噪声
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [dragOverFiles, setDragOverFiles] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [creatingDoc, setCreatingDoc] = useState(false);
@@ -523,34 +525,57 @@ export function Sidebar({
 
   const isConnected = Boolean(authSession && authSession.mode !== "guest" && config.apiKey);
 
+  // 侧栏紧凑列表项样式（28px 行高、线性中等字重选中态与左侧 2px 强调竖条）
+  const listRowBaseClass =
+    "relative group h-7 px-2 rounded-[5px] flex items-center justify-between gap-1.5 text-[12px] cursor-pointer transition-colors duration-150";
+  const listRowActiveClass =
+    "bg-[var(--bg-active)] text-[var(--text-primary)] font-linear-medium before:content-[''] before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full before:bg-[var(--accent)]";
+  const listRowIdleClass =
+    "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]";
+  const sectionCountBadgeClass =
+    "px-1.5 py-px rounded-full bg-[var(--surface-subtle)] border border-[var(--border-hairline)]/70 text-[10px] tabular-nums text-[var(--text-muted)] leading-tight shrink-0";
+
   return (
     <aside
-      className={`flex flex-col bg-[var(--bg-sidebar)] border-r border-[var(--border-hairline)] h-full min-h-0 select-none ${className}`}
+      className={cn(
+        "flex flex-col bg-[var(--bg-sidebar)] border-r border-[var(--border-hairline)] h-full min-h-0 select-none",
+        className
+      )}
     >
       {/* 顶部动作：新建会话与 ⌘K 搜索入口 */}
-      <div className="p-2 space-y-1 border-b border-[var(--border-hairline)] shrink-0">
-        <button
-          type="button"
-          onClick={() => createSession()}
-          className="w-full h-7 px-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] flex items-center gap-2 text-[12px] font-medium text-[var(--text-primary)] transition cursor-pointer"
-        >
-          <MessageSquarePlus className="w-3.5 h-3.5 text-[var(--text-secondary)] shrink-0" />
-          <span>新建会话</span>
-        </button>
+      <div className="p-2 space-y-1 border-b border-[var(--border-hairline)]/60 shrink-0">
+        <Tooltip content="新建会话并聚焦输入框" shortcut="C" side="right">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              createSession()
+                .then(() =>
+                  setTimeout(() => {
+                    window.dispatchEvent(new CustomEvent("mizurisu:focus-composer"));
+                  }, 30)
+                )
+                .catch(() => undefined);
+            }}
+            className="w-full justify-start px-2 text-[12px]"
+          >
+            <MessageSquarePlus className="w-3.5 h-3.5 text-[var(--text-secondary)] shrink-0" />
+            <span>新建会话</span>
+          </Button>
+        </Tooltip>
 
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => setCommandPaletteOpen(true)}
-          className="w-full h-7 px-2 rounded-md hover:bg-[var(--bg-hover)] flex items-center justify-between text-[12px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition cursor-pointer"
+          className="w-full justify-between px-2 text-[12px] text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
         >
-          <span className="flex items-center gap-2 truncate">
+          <span className="flex items-center gap-2 min-w-0 truncate">
             <Search className="w-3.5 h-3.5 shrink-0" />
-            <span>快速跳转 / 命令</span>
+            <span className="truncate">快速跳转 / 命令</span>
           </span>
-          <kbd className="text-[10px] font-mono px-1 py-0.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[var(--text-muted)] leading-none">
-            ⌘K
-          </kbd>
-        </button>
+          <Kbd keys={["Mod", "K"]} />
+        </Button>
       </div>
 
       {/* 中部：扁平分区折叠列表 (28px h-7 精密行高) */}
@@ -569,51 +594,53 @@ export function Sidebar({
               await uploadWorkspaceBatch(e.dataTransfer.files);
             }
           }}
-          className={`rounded-md transition ${
-            dragOverFiles
-              ? "ring-1 ring-[var(--accent)] bg-[var(--accent-soft)]"
-              : ""
-          }`}
+          className={cn(
+            "rounded-md transition-colors",
+            dragOverFiles && "ring-1 ring-[var(--accent)] bg-[var(--accent-soft)]"
+          )}
         >
           <div
             onClick={() => setFilesOpen((v) => !v)}
-            className="h-6 px-1.5 flex items-center justify-between gap-1 text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] cursor-pointer"
+            className="h-6 px-1.5 flex items-center justify-between gap-1 text-[11px] font-linear-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] cursor-pointer"
           >
-            <div className="flex items-center gap-1 min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0">
               {filesOpen ? (
                 <ChevronDown className="w-3 h-3 shrink-0" />
               ) : (
                 <ChevronRight className="w-3 h-3 shrink-0" />
               )}
               <span className="truncate">工作区文件</span>
-              <span className="tabular-nums text-[10px] opacity-75 shrink-0">({files.length})</span>
+              <span className={sectionCountBadgeClass}>{files.length}</span>
             </div>
             <div
               ref={createMenuRef}
               className="relative flex items-center gap-0.5 shrink-0"
               onClick={(e) => e.stopPropagation()}
             >
-              <button
-                type="button"
-                disabled={creatingDoc}
-                onClick={() => setCreateMenuOpen((v) => !v)}
-                aria-haspopup="menu"
-                aria-expanded={createMenuOpen}
-                aria-label="新建文档"
-                title="新建 Excel / Word / 幻灯片 / Markdown"
-                className={`h-5 px-1.5 rounded inline-flex items-center gap-0.5 text-[11px] font-medium transition cursor-pointer whitespace-nowrap disabled:opacity-50 ${
-                  createMenuOpen
-                    ? "bg-[var(--bg-active)] text-[var(--text-primary)]"
-                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                }`}
-              >
-                {creatingDoc ? (
-                  <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-                ) : (
-                  <Plus className="w-3 h-3 shrink-0" />
-                )}
-                <span>新建</span>
-              </button>
+              <Tooltip content="新建 Excel / Word / 幻灯片 / Markdown" side="top">
+                <Button
+                  variant={createMenuOpen ? "secondary" : "ghost"}
+                  size="xs"
+                  disabled={creatingDoc}
+                  onClick={() => setCreateMenuOpen((v) => !v)}
+                  aria-haspopup="menu"
+                  aria-expanded={createMenuOpen}
+                  aria-label="新建文档"
+                  className={cn(
+                    "h-5 px-1.5 rounded-[4px] gap-0.5 text-[11px]",
+                    createMenuOpen
+                      ? "bg-[var(--bg-active)] text-[var(--text-primary)]"
+                      : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  )}
+                >
+                  {creatingDoc ? (
+                    <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                  ) : (
+                    <Plus className="w-3 h-3 shrink-0" />
+                  )}
+                  <span>新建</span>
+                </Button>
+              </Tooltip>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -622,46 +649,59 @@ export function Sidebar({
                 onChange={handleUpload}
                 className="hidden"
               />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                title="导入 Office / 文档"
-              >
-                <Upload className="w-3 h-3" />
-              </button>
-              <button
-                type="button"
-                disabled={files.length === 0 || exportingZip}
-                onClick={() => void handleExportZip()}
-                className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                title={files.length === 0 ? "暂无文件可打包" : "打包导出 ZIP"}
-                aria-label="打包导出 ZIP"
-              >
-                {exportingZip ? (
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                ) : (
-                  <Archive className="w-3 h-3" />
-                )}
-              </button>
-              {platform.canMountNativeDir && (
-                <button
-                  type="button"
-                  onClick={() => mountNativeDirectory()}
-                  className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                  title="挂载本地目录"
+              <Tooltip content="导入 Office / 文档" side="top">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  aria-label="导入 Office / 文档"
+                  className="size-5 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                 >
-                  <FolderOpen className="w-3 h-3" />
-                </button>
+                  <Upload className="w-3 h-3" />
+                </Button>
+              </Tooltip>
+              <Tooltip
+                content={files.length === 0 ? "暂无文件可打包" : "打包导出 ZIP"}
+                side="top"
+              >
+                <span className="inline-flex">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    disabled={files.length === 0 || exportingZip}
+                    onClick={() => void handleExportZip()}
+                    aria-label="打包导出 ZIP"
+                    className="size-5 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    {exportingZip ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Archive className="w-3 h-3" />
+                    )}
+                  </Button>
+                </span>
+              </Tooltip>
+              {platform.canMountNativeDir && (
+                <Tooltip content="挂载本地目录" side="top">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => mountNativeDirectory()}
+                    aria-label="挂载本地目录"
+                    className="size-5 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    <FolderOpen className="w-3 h-3" />
+                  </Button>
+                </Tooltip>
               )}
 
               {createMenuOpen && (
                 <div
                   role="menu"
                   aria-label="新建文档类型"
-                  className="absolute right-0 top-6 w-48 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-elevated)] shadow-xl z-30 py-1 overflow-hidden"
+                  className="absolute right-0 top-6 w-48 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-elevated)] shadow-[var(--shadow-popover)] z-30 py-1 overflow-hidden"
                 >
-                  <div className="px-2.5 py-1 text-[10px] font-medium text-[var(--text-muted)] border-b border-[var(--border-hairline)]">
+                  <div className="px-2.5 py-1 text-[10px] font-linear-medium text-[var(--text-muted)] border-b border-[var(--border-hairline)]/70">
                     新建工作区文档
                   </div>
                   {(
@@ -697,7 +737,7 @@ export function Sidebar({
                       type="button"
                       role="menuitem"
                       onClick={() => void handleCreateDocument(item.kind)}
-                      className="w-full px-2.5 py-1.5 flex items-center justify-between gap-2 text-left text-[12px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer"
+                      className="w-full px-2.5 py-1.5 flex items-center justify-between gap-2 text-left text-[12px] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors cursor-pointer linear-focus-ring"
                     >
                       <span className="flex items-center gap-2 min-w-0">
                         <FileIcon category={item.category} className="w-3.5 h-3.5 shrink-0" />
@@ -717,8 +757,9 @@ export function Sidebar({
             <div className="mt-1 space-y-1">
               {files.length > 0 && (
                 <div className="px-1">
-                  <div className="h-7 px-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] focus-within:border-[var(--border-strong)] flex items-center gap-1.5 transition">
-                    <Search className="w-3 h-3 text-[var(--text-muted)] shrink-0" />
+                  {/* 降低搜索框常态存在感，仅在悬停或聚焦时显现细边框 */}
+                  <div className="h-7 px-2 rounded-[5px] bg-[var(--surface-subtle)] border border-transparent hover:bg-[var(--bg-hover)] focus-within:bg-[var(--bg-surface)] focus-within:border-[var(--border-hairline)] flex items-center gap-1.5 transition-colors">
+                    <Search className="w-3 h-3 text-[var(--text-dim)] shrink-0" />
                     <input
                       type="text"
                       value={fileQuery}
@@ -729,20 +770,22 @@ export function Sidebar({
                           setFileQuery("");
                         }
                       }}
-                      placeholder="搜索工作区文件..."
+                      placeholder="筛选工作区文件..."
                       aria-label="搜索工作区文件"
-                      className="w-full min-w-0 bg-transparent text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none"
+                      className="w-full min-w-0 bg-transparent text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-dim)] outline-none"
                     />
                     {fileQuery && (
-                      <button
-                        type="button"
-                        onClick={() => setFileQuery("")}
-                        className="w-4 h-4 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0 cursor-pointer"
-                        title="清空搜索"
-                        aria-label="清空搜索"
-                      >
-                        <X className="w-2.5 h-2.5" />
-                      </button>
+                      <Tooltip content="清空搜索" side="top">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => setFileQuery("")}
+                          aria-label="清空搜索"
+                          className="size-4 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </Button>
+                      </Tooltip>
                     )}
                   </div>
                 </div>
@@ -758,13 +801,14 @@ export function Sidebar({
                     <div className="text-[11px] text-[var(--text-muted)] truncate">
                       未找到匹配「{fileQuery.trim()}」的文件
                     </div>
-                    <button
-                      type="button"
+                    <Button
+                      variant="ghost"
+                      size="xs"
                       onClick={() => setFileQuery("")}
-                      className="text-[11px] text-[var(--accent)] hover:underline cursor-pointer"
+                      className="text-[var(--accent)] hover:text-[var(--accent-hover)]"
                     >
                       清空筛选
-                    </button>
+                    </Button>
                   </div>
                 ) : (
                   filteredFiles.map((f) => {
@@ -776,7 +820,7 @@ export function Sidebar({
                         <div
                           key={f.path}
                           onClick={(e) => e.stopPropagation()}
-                          className="h-7 px-1.5 rounded-md flex items-center gap-1 bg-[var(--bg-active)] border border-[var(--border-strong)]"
+                          className="h-7 px-1.5 rounded-[5px] flex items-center gap-1 bg-[var(--bg-active)] border border-[var(--border-strong)]"
                         >
                           <FileIcon category={f.category} className="w-3.5 h-3.5 shrink-0" />
                           <input
@@ -806,26 +850,32 @@ export function Sidebar({
                             className="flex-1 min-w-0 bg-transparent text-[12px] text-[var(--text-primary)] outline-none"
                             aria-label={`重命名文件 ${f.name}`}
                           />
-                          <button
-                            type="button"
-                            disabled={renamingFile}
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => void commitFileRename(f)}
-                            className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--accent)] shrink-0 cursor-pointer"
-                            title="确认重命名"
-                          >
-                            <Check className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={renamingFile}
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={cancelFileRename}
-                            className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0 cursor-pointer"
-                            title="取消"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
+                          <Tooltip content="确认重命名" side="top">
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              disabled={renamingFile}
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => void commitFileRename(f)}
+                              aria-label="确认重命名"
+                              className="size-5 rounded-[4px] text-[var(--accent)]"
+                            >
+                              <Check className="w-3 h-3" />
+                            </Button>
+                          </Tooltip>
+                          <Tooltip content="取消" side="top">
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              disabled={renamingFile}
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={cancelFileRename}
+                              aria-label="取消重命名"
+                              className="size-5 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                            >
+                              <X className="w-3 h-3" />
+                            </Button>
+                          </Tooltip>
                         </div>
                       );
                     }
@@ -840,69 +890,78 @@ export function Sidebar({
                             openPreview(f.path);
                           }
                         }}
-                        className={`group h-7 px-2 rounded-md flex items-center justify-between gap-1.5 text-[12px] cursor-pointer transition ${
-                          active
-                            ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-medium"
-                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                        }`}
+                        className={cn(
+                          listRowBaseClass,
+                          active ? listRowActiveClass : listRowIdleClass
+                        )}
                       >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <FileIcon category={f.category} className="w-3.5 h-3.5 shrink-0" />
-                          <span className="truncate" title={f.path}>
-                            {f.name}
-                          </span>
-                        </div>
+                        <Tooltip content={f.path} side="right" delayMs={450}>
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <FileIcon category={f.category} className="w-3.5 h-3.5 shrink-0" />
+                            <span className="truncate">{f.name}</span>
+                          </div>
+                        </Tooltip>
                         {isConfirmingDelete ? (
                           <div
                             className="flex items-center gap-1 shrink-0"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteFile(f.path)}
-                              className="h-5 px-1.5 rounded bg-[var(--status-danger)] text-white text-[10px] font-medium hover:opacity-90 cursor-pointer whitespace-nowrap"
-                              title="再次点击确认删除该文件"
-                            >
-                              确认删除
-                            </button>
-                            <button
-                              type="button"
-                              onClick={clearDeleteConfirm}
-                              className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                              title="取消删除"
-                              aria-label="取消删除"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
+                            <Tooltip content="再次点击确认删除该文件" side="top">
+                              <Button
+                                variant="danger"
+                                size="xs"
+                                onClick={() => void handleDeleteFile(f.path)}
+                                className="h-5 px-1.5 rounded-[4px] bg-[var(--status-danger)] text-white border-transparent text-[10px] hover:bg-[var(--status-danger)] hover:opacity-90"
+                              >
+                                确认删除
+                              </Button>
+                            </Tooltip>
+                            <Tooltip content="取消删除" side="top">
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={clearDeleteConfirm}
+                                aria-label="取消删除"
+                                className="size-5 rounded-[4px] hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                              >
+                                <X className="w-3 h-3" />
+                              </Button>
+                            </Tooltip>
                           </div>
                         ) : (
                           <>
-                            <span className="hidden md:inline text-[10px] text-[var(--text-muted)] tabular-nums shrink-0 md:group-hover:hidden">
+                            <span className="hidden md:inline text-[10px] text-[var(--text-muted)] tabular-nums shrink-0 md:group-hover:hidden md:group-focus-within:hidden">
                               {formatFileSize(f.size)}
                             </span>
-                            <div className="flex md:hidden md:group-hover:flex items-center gap-0.5 shrink-0">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  startFileRename(f);
-                                }}
-                                className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                                title="重命名文件"
-                              >
-                                <Pencil className="w-3 h-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  armDeleteConfirm(f.path);
-                                }}
-                                className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--status-danger)] cursor-pointer"
-                                title="删除文件"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
+                            <div className="flex md:hidden md:group-hover:flex md:group-focus-within:flex items-center gap-0.5 shrink-0">
+                              <Tooltip content="重命名文件" side="top">
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    startFileRename(f);
+                                  }}
+                                  aria-label={`重命名文件 ${f.name}`}
+                                  className="size-5 rounded-[4px] hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                </Button>
+                              </Tooltip>
+                              <Tooltip content="删除文件" side="top">
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    armDeleteConfirm(f.path);
+                                  }}
+                                  aria-label={`删除文件 ${f.name}`}
+                                  className="size-5 rounded-[4px] hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--status-danger)]"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </Button>
+                              </Tooltip>
                             </div>
                           </>
                         )}
@@ -919,16 +978,16 @@ export function Sidebar({
         <section>
           <div
             onClick={() => setChatsOpen((v) => !v)}
-            className="h-6 px-1.5 flex items-center justify-between text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] cursor-pointer"
+            className="h-6 px-1.5 flex items-center justify-between text-[11px] font-linear-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] cursor-pointer"
           >
-            <div className="flex items-center gap-1 min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0">
               {chatsOpen ? (
                 <ChevronDown className="w-3 h-3 shrink-0" />
               ) : (
                 <ChevronRight className="w-3 h-3 shrink-0" />
               )}
-              <span>会话历史</span>
-              <span className="tabular-nums text-[10px] opacity-75">({sessions.length})</span>
+              <span className="truncate">会话历史</span>
+              <span className={sectionCountBadgeClass}>{sessions.length}</span>
             </div>
           </div>
 
@@ -943,7 +1002,7 @@ export function Sidebar({
                     <div
                       key={s.id}
                       onClick={(e) => e.stopPropagation()}
-                      className="h-7 px-1.5 rounded-md flex items-center gap-1 bg-[var(--bg-active)] border border-[var(--border-strong)]"
+                      className="h-7 px-1.5 rounded-[5px] flex items-center gap-1 bg-[var(--bg-active)] border border-[var(--border-strong)]"
                     >
                       <MessageSquare className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
                       <input
@@ -966,26 +1025,32 @@ export function Sidebar({
                         className="flex-1 min-w-0 bg-transparent text-[12px] text-[var(--text-primary)] outline-none"
                         aria-label={`重命名会话 ${s.title}`}
                       />
-                      <button
-                        type="button"
-                        disabled={renamingSession}
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => void commitSessionRename(s)}
-                        className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--accent)] shrink-0 cursor-pointer"
-                        title="保存名称"
-                      >
-                        <Check className="w-3 h-3" />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={renamingSession}
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={cancelSessionRename}
-                        className="w-5 h-5 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0 cursor-pointer"
-                        title="取消"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
+                      <Tooltip content="保存名称" side="top">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={renamingSession}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => void commitSessionRename(s)}
+                          aria-label="保存名称"
+                          className="size-5 rounded-[4px] text-[var(--accent)]"
+                        >
+                          <Check className="w-3 h-3" />
+                        </Button>
+                      </Tooltip>
+                      <Tooltip content="取消" side="top">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={renamingSession}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={cancelSessionRename}
+                          aria-label="取消重命名"
+                          className="size-5 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                        >
+                          <X className="w-3 h-3" />
+                        </Button>
+                      </Tooltip>
                     </div>
                   );
                 }
@@ -994,58 +1059,71 @@ export function Sidebar({
                   <div
                     key={s.id}
                     onClick={() => selectSession(s.id)}
-                    className={`group h-7 px-2 rounded-md flex items-center justify-between gap-1.5 text-[12px] cursor-pointer transition ${
-                      active
-                        ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-medium"
-                        : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                    }`}
+                    className={cn(
+                      listRowBaseClass,
+                      active ? listRowActiveClass : listRowIdleClass
+                    )}
                   >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <MessageSquare className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <MessageSquare
+                        className={cn(
+                          "w-3.5 h-3.5 shrink-0",
+                          active ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"
+                        )}
+                      />
                       <span className="truncate">{s.title}</span>
                     </div>
-                    <span className="hidden md:inline text-[10px] text-[var(--text-muted)] tabular-nums shrink-0 md:group-hover:hidden">
+                    <span className="hidden md:inline text-[10px] text-[var(--text-muted)] tabular-nums shrink-0 md:group-hover:hidden md:group-focus-within:hidden">
                       {s.messages.length}
                     </span>
-                    <div className="flex md:hidden md:group-hover:flex items-center gap-0.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          startSessionRename(s);
-                        }}
-                        className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                        title="重命名会话"
-                      >
-                        <Pencil className="w-3 h-3" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          exportSessionMarkdown(s.id).catch((err) => {
-                            pushToast(
-                              err instanceof Error ? err.message : String(err),
-                              "error"
-                            );
-                          });
-                        }}
-                        className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                        title="导出 Markdown"
-                      >
-                        <FileDown className="w-3 h-3" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleDeleteSession(s.id);
-                        }}
-                        className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--status-danger)] cursor-pointer"
-                        title="删除会话"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
+                    <div className="flex md:hidden md:group-hover:flex md:group-focus-within:flex items-center gap-0.5 shrink-0">
+                      <Tooltip content="重命名会话" side="top">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startSessionRename(s);
+                          }}
+                          aria-label={`重命名会话 ${s.title}`}
+                          className="size-5 rounded-[4px] hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </Button>
+                      </Tooltip>
+                      <Tooltip content="导出 Markdown" side="top">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            exportSessionMarkdown(s.id).catch((err) => {
+                              pushToast(
+                                err instanceof Error ? err.message : String(err),
+                                "error"
+                              );
+                            });
+                          }}
+                          aria-label={`导出会话 ${s.title}`}
+                          className="size-5 rounded-[4px] hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                        >
+                          <FileDown className="w-3 h-3" />
+                        </Button>
+                      </Tooltip>
+                      <Tooltip content="删除会话" side="top">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleDeleteSession(s.id);
+                          }}
+                          aria-label={`删除会话 ${s.title}`}
+                          className="size-5 rounded-[4px] hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--status-danger)]"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </Tooltip>
                     </div>
                   </div>
                 );
@@ -1054,20 +1132,26 @@ export function Sidebar({
           )}
         </section>
 
-        {/* 分区 3：办公技能 */}
+        {/* 分区 3：办公技能（默认折叠以保持静谧侧栏） */}
         <section>
           <div
             onClick={() => setSkillsOpen((v) => !v)}
-            className="h-6 px-1.5 flex items-center justify-between text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] cursor-pointer"
+            className="h-6 px-1.5 flex items-center justify-between text-[11px] font-linear-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] cursor-pointer"
           >
-            <div className="flex items-center gap-1 min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0">
               {skillsOpen ? (
                 <ChevronDown className="w-3 h-3 shrink-0" />
               ) : (
                 <ChevronRight className="w-3 h-3 shrink-0" />
               )}
-              <span>办公技能</span>
-              <span className="tabular-nums text-[10px] opacity-75">({allSkills.length})</span>
+              <span className="truncate">办公技能</span>
+              <span className={sectionCountBadgeClass}>{allSkills.length}</span>
+              {!skillsOpen && activeSkillId && (
+                <span
+                  aria-label="已挂载办公技能"
+                  className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shrink-0"
+                />
+              )}
             </div>
           </div>
 
@@ -1079,38 +1163,47 @@ export function Sidebar({
                   <div
                     key={sk.id}
                     onClick={() => setActiveSkill(active ? undefined : sk.id)}
-                    title={sk.description}
-                    className={`group h-7 px-2 rounded-md flex items-center justify-between gap-1.5 text-[12px] cursor-pointer transition ${
-                      active
-                        ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-medium"
-                        : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                    }`}
+                    className={cn(
+                      listRowBaseClass,
+                      active ? listRowActiveClass : listRowIdleClass
+                    )}
                   >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Wand2
-                        className={`w-3.5 h-3.5 shrink-0 ${
-                          active ? "text-[var(--accent)]" : "text-[var(--text-muted)]"
-                        }`}
-                      />
-                      <span className="truncate">{sk.name}</span>
-                    </div>
+                    <Tooltip
+                      content={sk.description}
+                      side="right"
+                      delayMs={350}
+                      className="max-w-[260px] whitespace-normal"
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <Wand2
+                          className={cn(
+                            "w-3.5 h-3.5 shrink-0",
+                            active ? "text-[var(--accent)]" : "text-[var(--text-muted)]"
+                          )}
+                        />
+                        <span className="truncate">{sk.name}</span>
+                      </div>
+                    </Tooltip>
                     <div className="flex items-center gap-1 shrink-0">
                       {active && (
                         <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)]" />
                       )}
                       {onUseSkillPrompt && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveSkill(sk.id);
-                            onUseSkillPrompt(sk.prompt, sk.id);
-                          }}
-                          className="opacity-75 md:opacity-0 md:group-hover:opacity-100 w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer"
-                          title="挂载并填入提示词"
-                        >
-                          <ArrowUpRight className="w-3 h-3" />
-                        </button>
+                        <Tooltip content="挂载并填入提示词" side="right">
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveSkill(sk.id);
+                              onUseSkillPrompt(sk.prompt, sk.id);
+                            }}
+                            aria-label={`使用技能 ${sk.name}`}
+                            className="opacity-75 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 size-5 rounded-[4px] hover:bg-[var(--bg-active)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                          >
+                            <ArrowUpRight className="w-3 h-3" />
+                          </Button>
+                        </Tooltip>
                       )}
                     </div>
                   </div>
@@ -1122,15 +1215,16 @@ export function Sidebar({
       </div>
 
       {/* 底部固定极简账户条 */}
-      <div className="shrink-0 border-t border-[var(--border-hairline)] px-2.5 py-2 bg-[var(--bg-sidebar)]">
+      <div className="shrink-0 border-t border-[var(--border-hairline)]/60 px-2.5 py-2 bg-[var(--bg-sidebar)]">
         <div className="flex items-center justify-between gap-2 text-[12px]">
           <div className="flex items-center gap-1.5 min-w-0">
             <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+              className={cn(
+                "w-1.5 h-1.5 rounded-full shrink-0",
                 isConnected ? "bg-[var(--status-success)]" : "bg-[var(--text-muted)]"
-              }`}
+              )}
             />
-            <span className="font-medium text-[var(--text-primary)] truncate">
+            <span className="font-linear-medium text-[var(--text-primary)] truncate">
               {userName}
             </span>
           </div>
@@ -1145,54 +1239,68 @@ export function Sidebar({
           </span>
           <div className="flex items-center gap-0.5 shrink-0">
             {isNonGuest && (
-              <button
-                type="button"
-                onClick={() => {
-                  refreshAccountSession().catch(() => refreshBilling());
-                }}
-                className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                title="刷新余额与会话"
-              >
-                <RefreshCw
-                  className={`w-3 h-3 ${
-                    billingLoading || authBusy ? "animate-spin" : ""
-                  }`}
-                />
-              </button>
+              <Tooltip content="刷新余额与会话" side="top">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => {
+                    refreshAccountSession().catch(() => refreshBilling());
+                  }}
+                  aria-label="刷新余额与会话"
+                  className="size-5 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                >
+                  <RefreshCw
+                    className={cn(
+                      "w-3 h-3",
+                      (billingLoading || authBusy) && "animate-spin"
+                    )}
+                  />
+                </Button>
+              </Tooltip>
             )}
-            <button
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-              className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-              title="设置"
-            >
-              <Settings className="w-3 h-3" />
-            </button>
-            <button
-              type="button"
-              onClick={() => logout()}
-              className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--status-danger)] cursor-pointer"
-              title="退出登录"
-            >
-              <LogOut className="w-3 h-3" />
-            </button>
+            <Tooltip content="账号与工作台设置" shortcut={["Mod", ","]} side="top">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setSettingsOpen(true)}
+                aria-label="设置"
+                className="size-5 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              >
+                <Settings className="w-3 h-3" />
+              </Button>
+            </Tooltip>
+            <Tooltip content="退出登录" side="top">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => logout()}
+                aria-label="退出登录"
+                className="size-5 rounded-[4px] text-[var(--text-muted)] hover:text-[var(--status-danger)]"
+              >
+                <LogOut className="w-3 h-3" />
+              </Button>
+            </Tooltip>
           </div>
         </div>
 
-        <a
-          href={consoleLinks.topupUrl}
-          target="_blank"
-          rel="noreferrer"
-          className={
-            isNonGuest
-              ? "mt-2 h-6.5 px-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] flex items-center justify-between text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition"
-              : "mt-1.5 h-6 px-1.5 rounded flex items-center justify-between text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition"
-          }
-          title={isNonGuest ? "前往站点控制台管理令牌与充值" : "前往站点控制台登录或充值"}
+        <Tooltip
+          content={isNonGuest ? "前往站点控制台管理令牌与充值" : "前往站点控制台登录或充值"}
+          side="top"
         >
-          <span className="truncate">前往控制台 / 充值</span>
-          <ExternalLink className="w-3 h-3 shrink-0" />
-        </a>
+          <a
+            href={consoleLinks.topupUrl}
+            target="_blank"
+            rel="noreferrer"
+            className={
+              isNonGuest
+                ? "mt-2 h-6.5 px-2 rounded-[5px] border border-[var(--border-hairline)]/80 bg-[var(--surface-subtle)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] flex items-center justify-between text-[11px] font-linear-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors linear-focus-ring"
+                : "mt-1.5 h-6 px-1.5 rounded-[5px] flex items-center justify-between text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors linear-focus-ring"
+            }
+          >
+            <span className="truncate">前往控制台 / 充值</span>
+            <ExternalLink className="w-3 h-3 shrink-0" />
+          </a>
+        </Tooltip>
       </div>
     </aside>
   );

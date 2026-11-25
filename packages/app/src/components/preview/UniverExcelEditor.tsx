@@ -518,9 +518,13 @@ export function UniverExcelEditor({
         </div>
       )}
 
-      {/* Univer 电子表格渲染容器 */}
+      {/* Univer 电子表格渲染容器（tabIndex={-1} 确保点击 Canvas 单元格时焦点留在宿主容器内） */}
       <div className="relative flex-1 min-h-0 w-full overflow-hidden">
-        <div ref={containerRef} className="univer-host-container h-full w-full" />
+        <div
+          ref={containerRef}
+          tabIndex={-1}
+          className="univer-host-container h-full w-full outline-none"
+        />
         {!ready && !error && (
           <div className="absolute inset-0 flex items-center justify-center bg-[var(--bg-canvas)]/85 text-xs text-[var(--text-muted)] gap-2 pointer-events-none">
             <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" />

@@ -51,6 +51,7 @@ import type {
   NewApiSiteStatus,
   NewApiTokenItem,
   SkillTemplate,
+  ToastAction,
   ToastItem,
   UiMessage,
   WorkspaceFileMeta,
@@ -77,6 +78,7 @@ function getDefaultConfig(): NewApiConfig {
 function getDefaultSettings(): AppSettings {
   return {
     theme: "dark",
+    highContrast: false,
     autoApproveDelete: false,
     previewWidth: 520,
     favoriteModels: [],
@@ -98,11 +100,19 @@ function createEmptySession(title = "新对话"): ChatSession {
   };
 }
 
-function applyThemeToDocument(theme: "light" | "dark"): void {
+function applyThemeToDocument(theme: "light" | "dark", highContrast = false): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  root.classList.toggle("dark", theme === "dark");
-  root.classList.toggle("light", theme === "light");
+  root?.classList?.toggle("dark", theme === "dark");
+  root?.classList?.toggle("light", theme === "light");
+  root?.classList?.toggle("high-contrast", Boolean(highContrast));
+  const themeMeta =
+    typeof document.querySelector === "function"
+      ? document.querySelector('meta[name="theme-color"]')
+      : null;
+  if (themeMeta) {
+    themeMeta.setAttribute("content", theme === "dark" ? "#08090a" : "#ffffff");
+  }
 }
 
 function formatYmd(date = new Date()): string {
@@ -175,6 +185,7 @@ export interface AppState {
   activeSkillId?: string;
   pendingApproval: ApprovalRequest | null;
   settingsOpen: boolean;
+  shortcutHelpOpen: boolean;
   mobileTab: MobileTab;
   statusBanner?: string;
   /** 全局轻提示队列 */
@@ -182,13 +193,18 @@ export interface AppState {
 
   init: () => Promise<void>;
   setSettingsOpen: (open: boolean) => void;
+  setShortcutHelpOpen: (open: boolean) => void;
   setCommandPaletteOpen: (open: boolean) => void;
   setMobileTab: (tab: MobileTab) => void;
   setPreviewOpen: (open: boolean) => void;
   setPreviewExpanded: (expanded: boolean) => void;
   openPreview: (path: string) => void;
   closePreview: () => void;
-  pushToast: (message: string, level?: ToastItem["level"]) => void;
+  pushToast: (
+    message: string,
+    level?: ToastItem["level"],
+    options?: { action?: ToastAction; durationMs?: number }
+  ) => void;
   dismissToast: (id: string) => void;
 
   loginWithAccount: (
@@ -207,6 +223,7 @@ export interface AppState {
   updateConfig: (patch: Partial<NewApiConfig>) => Promise<void>;
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>;
   toggleTheme: () => Promise<void>;
+  toggleHighContrast: () => Promise<void>;
   toggleFavoriteModel: (modelId: string) => Promise<void>;
   dismissOnboarding: () => Promise<void>;
   testConnectionAndSync: () => Promise<ModelInfo[]>;
@@ -409,6 +426,7 @@ export const useAppStore = create<AppState>((set, get) => {
     customSkills: [],
     pendingApproval: null,
     settingsOpen: false,
+    shortcutHelpOpen: false,
     mobileTab: "chat",
     toasts: [],
 
@@ -448,7 +466,7 @@ export const useAppStore = create<AppState>((set, get) => {
                 ? savedSettings.previewWidth
                 : defaults.previewWidth,
           };
-          applyThemeToDocument(settings.theme);
+          applyThemeToDocument(settings.theme, settings.highContrast);
 
           let authSession: AuthSession | null = savedAuthSession ?? null;
           // 兼容旧版本已保存 baseUrl + apiKey 但尚无 auth_session 记录的场景
@@ -611,6 +629,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     setSettingsOpen: (open) => set({ settingsOpen: open }),
+    setShortcutHelpOpen: (open) => set({ shortcutHelpOpen: open }),
     setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
     setMobileTab: (tab) => set({ mobileTab: tab }),
     setPreviewOpen: (open) => set({ previewOpen: open }),
@@ -627,22 +646,30 @@ export const useAppStore = create<AppState>((set, get) => {
 
     closePreview: () => set({ previewOpen: false, previewExpanded: false }),
 
-    pushToast: (message, level = "info") => {
+    pushToast: (message, level = "info", options) => {
       const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const durationMs = options?.durationMs ?? (options?.action ? 6000 : 4000);
       const timer = setTimeout(() => {
         get().dismissToast(id);
-      }, 4000);
+      }, durationMs);
       toastTimers.set(id, timer);
+      const item: ToastItem = {
+        id,
+        level,
+        message,
+        ...(options?.action ? { action: options.action } : {}),
+        ...(options?.durationMs !== undefined ? { durationMs: options.durationMs } : {}),
+      };
       set((state) => {
-        const combined = [...state.toasts, { id, level, message }];
+        const combined = [...state.toasts, item];
         if (combined.length > 4) {
           const overflowCount = combined.length - 4;
           const evicted = combined.slice(0, overflowCount);
-          for (const item of evicted) {
-            const staleTimer = toastTimers.get(item.id);
+          for (const entry of evicted) {
+            const staleTimer = toastTimers.get(entry.id);
             if (staleTimer) {
               clearTimeout(staleTimer);
-              toastTimers.delete(item.id);
+              toastTimers.delete(entry.id);
             }
           }
           return { toasts: combined.slice(overflowCount) };
@@ -1053,7 +1080,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
     updateSettings: async (patch) => {
       const next = { ...get().settings, ...patch };
-      applyThemeToDocument(next.theme);
+      applyThemeToDocument(next.theme, next.highContrast);
       set({ settings: next });
       await kvSet("app_settings", next);
     },
@@ -1061,6 +1088,11 @@ export const useAppStore = create<AppState>((set, get) => {
     toggleTheme: async () => {
       const nextTheme = get().settings.theme === "dark" ? "light" : "dark";
       await get().updateSettings({ theme: nextTheme });
+    },
+
+    toggleHighContrast: async () => {
+      const nextHighContrast = !Boolean(get().settings.highContrast);
+      await get().updateSettings({ highContrast: nextHighContrast });
     },
 
     toggleFavoriteModel: async (modelId) => {
@@ -1144,6 +1176,13 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     deleteSession: async (id) => {
+      const target = get().sessions.find((s) => s.id === id);
+      const snapshot: ChatSession | null = target
+        ? {
+            ...target,
+            messages: target.messages.map((m) => ({ ...m })),
+          }
+        : null;
       if (
         get().activeSessionId === id &&
         (get().isStreaming || get().pendingApproval)
@@ -1156,13 +1195,33 @@ export const useAppStore = create<AppState>((set, get) => {
         const fresh = createEmptySession();
         await saveSession(fresh);
         set({ sessions: [fresh], activeSessionId: fresh.id });
-        return;
+      } else {
+        set((state) => ({
+          sessions: remaining,
+          activeSessionId:
+            state.activeSessionId === id ? remaining[0].id : state.activeSessionId,
+        }));
       }
-      set((state) => ({
-        sessions: remaining,
-        activeSessionId:
-          state.activeSessionId === id ? remaining[0].id : state.activeSessionId,
-      }));
+      if (snapshot) {
+        get().pushToast(`已删除会话「${snapshot.title}」`, "info", {
+          durationMs: 6000,
+          action: {
+            label: "撤销",
+            onClick: async () => {
+              await saveSession(snapshot);
+              set((state) => {
+                if (state.sessions.some((s) => s.id === snapshot.id)) {
+                  return { activeSessionId: snapshot.id };
+                }
+                const merged = [snapshot, ...state.sessions].sort(
+                  (a, b) => b.updatedAt - a.updatedAt
+                );
+                return { sessions: merged, activeSessionId: snapshot.id };
+              });
+            },
+          },
+        });
+      }
     },
 
     renameSession: async (id, title) => {
@@ -1452,7 +1511,26 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     deleteWorkspaceFile: async (path) => {
+      const rec = await workspaceVfs.readRecord(path).catch(() => null);
+      const backupData = rec ? new Uint8Array(rec.data) : null;
+      const backupPath = rec?.path || path;
       await workspaceVfs.deleteFile(path);
+      await get().refreshFiles();
+      if (backupData) {
+        get().pushToast(`已删除 ${backupPath}`, "info", {
+          durationMs: 6000,
+          action: {
+            label: "撤销",
+            onClick: async () => {
+              await workspaceVfs.writeBytes(backupPath, backupData, {
+                snapshotNote: "撤销删除恢复",
+              });
+              await get().refreshFiles();
+              get().openPreview(backupPath);
+            },
+          },
+        });
+      }
     },
 
     renameWorkspaceFile: async (oldPath, newPath) => {
@@ -1569,7 +1647,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const starterPreview =
         files.find((f) => f.path.endsWith(".xlsx"))?.path ?? files[0]?.path ?? null;
       const defaultSettings = getDefaultSettings();
-      applyThemeToDocument(defaultSettings.theme);
+      applyThemeToDocument(defaultSettings.theme, defaultSettings.highContrast);
       set({
         config: getDefaultConfig(),
         settings: defaultSettings,
@@ -1578,6 +1656,7 @@ export const useAppStore = create<AppState>((set, get) => {
         authProgress: undefined,
         authError: undefined,
         commandPaletteOpen: false,
+        shortcutHelpOpen: false,
         models: [],
         modelsError: undefined,
         billing: undefined,

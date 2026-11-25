@@ -18,9 +18,9 @@ export default function App() {
   return (
     <ErrorBoundary scope="app">
       {!initialized ? (
-        <div className="h-screen w-screen flex flex-col items-center justify-center gap-3 bg-[var(--bg-canvas)] text-[var(--text-secondary)]">
+        <div className="h-dvh w-screen flex flex-col items-center justify-center gap-3 bg-[var(--bg-canvas)] text-[var(--text-secondary)]">
           <BrandLogo className="w-9 h-9 rounded-lg" />
-          <div className="flex items-center gap-2 text-[12px] text-[var(--text-muted)]">
+          <div className="flex items-center gap-2 text-[12px] font-linear-medium text-[var(--text-muted)]">
             <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--text-secondary)]" />
             <span>正在初始化本机工作区与 Mizurisu Agent 内核...</span>
           </div>

@@ -1,18 +1,22 @@
 import {
   AlertTriangle,
   Check,
+  Contrast,
   Database,
   Download,
   ExternalLink,
   Eye,
   EyeOff,
+  Keyboard,
   KeyRound,
   Loader2,
   LogOut,
+  Moon,
   Plus,
   RefreshCw,
   Server,
   Shield,
+  Sun,
   Trash2,
   Upload,
   User,
@@ -31,12 +35,14 @@ import {
 } from "../../storage/db";
 import { useAppStore } from "../../store/useAppStore";
 import type { ProtocolMode, SkillTemplate } from "../../types";
+import { Button, Dialog, Kbd, Tooltip, cn } from "../ui";
 
-type SettingsTab = "account" | "newapi" | "skills" | "data";
+type SettingsTab = "account" | "newapi" | "appearance" | "skills" | "data";
 
 const NAV_ITEMS: Array<{ id: SettingsTab; label: string; icon: typeof User }> = [
   { id: "account", label: "账号与令牌", icon: User },
   { id: "newapi", label: "中转站与模型", icon: Server },
+  { id: "appearance", label: "外观与快捷键", icon: Contrast },
   { id: "skills", label: "办公技能", icon: Wand2 },
   { id: "data", label: "安全与备份", icon: Shield },
 ];
@@ -55,6 +61,8 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
     customSkills,
     updateConfig,
     updateSettings,
+    toggleHighContrast,
+    setShortcutHelpOpen,
     testConnectionAndSync,
     switchActiveToken,
     createAccountToken,
@@ -89,6 +97,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
   const importRef = useRef<HTMLInputElement>(null);
   const siteStatus = authSession?.siteStatus;
   const consoleLinks = getMizurisuConsoleLinks(authSession?.baseUrl || config.baseUrl);
+  const highContrastEnabled = Boolean(settings.highContrast);
 
   useEffect(() => {
     setPromptDraft(settings.customSystemPrompt ?? "");
@@ -270,20 +279,24 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
 
   return (
     <div className="flex flex-col sm:flex-row h-full min-h-0 bg-[var(--bg-surface)] text-[var(--text-primary)]">
-      {/* 左侧导航栏 (桌面端 180px) */}
-      <aside className="sm:w-[180px] shrink-0 border-b sm:border-b-0 sm:border-r border-[var(--border-hairline)] bg-[var(--bg-sidebar)] flex flex-col">
+      {/* 左侧导航栏 (桌面端 184px) */}
+      <aside className="sm:w-[184px] shrink-0 border-b sm:border-b-0 sm:border-r border-[var(--border-hairline)] bg-[var(--bg-sidebar)] flex flex-col">
         <div className="h-11 px-3 border-b border-[var(--border-hairline)] flex items-center justify-between shrink-0">
-          <span className="text-[12px] font-semibold tracking-tight text-[var(--text-primary)]">
+          <span className="text-[12px] font-linear-semibold tracking-tight text-[var(--text-primary)]">
             工作台设置
           </span>
           {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="sm:hidden w-6 h-6 rounded hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)]"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+            <Tooltip content="关闭设置" side="bottom">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={onClose}
+                className="sm:hidden"
+                aria-label="关闭设置"
+              >
+                <X className="w-3.5 h-3.5" />
+              </Button>
+            </Tooltip>
           )}
         </div>
 
@@ -296,16 +309,18 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                 key={item.id}
                 type="button"
                 onClick={() => setTab(item.id)}
-                className={`h-7 px-2.5 rounded-md flex items-center gap-2 text-[12px] whitespace-nowrap shrink-0 transition cursor-pointer ${
+                className={cn(
+                  "h-7 px-2.5 rounded-md flex items-center gap-2 text-[12px] whitespace-nowrap shrink-0 transition cursor-pointer linear-focus-ring",
                   active
-                    ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-medium"
+                    ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-linear-medium"
                     : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                }`}
+                )}
               >
                 <Icon
-                  className={`w-3.5 h-3.5 shrink-0 ${
+                  className={cn(
+                    "w-3.5 h-3.5 shrink-0",
                     active ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"
-                  }`}
+                  )}
                 />
                 <span>{item.label}</span>
               </button>
@@ -321,18 +336,20 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
       {/* 右侧表单区 */}
       <div className="flex-1 min-w-0 flex flex-col min-h-0">
         <div className="hidden sm:flex h-11 px-5 border-b border-[var(--border-hairline)] items-center justify-between shrink-0">
-          <h2 className="text-[13px] font-semibold text-[var(--text-primary)]">
+          <h2 className="text-[13px] font-linear-semibold text-[var(--text-primary)]">
             {activeNav.label}
           </h2>
           {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="w-7 h-7 rounded-md hover:bg-[var(--bg-hover)] inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer"
-              aria-label="关闭设置"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <Tooltip content="关闭设置" shortcut="Escape" side="bottom">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onClose}
+                aria-label="关闭设置"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </Tooltip>
           )}
         </div>
 
@@ -345,13 +362,14 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                   <div className="space-y-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span
-                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                        className={cn(
+                          "w-1.5 h-1.5 rounded-full shrink-0",
                           authSession?.mode !== "guest" && config.apiKey
                             ? "bg-[var(--status-success)]"
                             : "bg-[var(--text-muted)]"
-                        }`}
+                        )}
                       />
-                      <span className="text-[13px] font-semibold text-[var(--text-primary)] truncate">
+                      <span className="text-[13px] font-linear-semibold text-[var(--text-primary)] truncate">
                         {authSession?.user?.displayName ||
                           authSession?.user?.username ||
                           authSession?.username ||
@@ -372,31 +390,34 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
 
                   <div className="flex items-center gap-1.5 shrink-0">
                     {authSession && authSession.mode !== "guest" && (
-                      <button
-                        type="button"
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         disabled={authBusy || checkingConnection}
                         onClick={() => void handleRefreshAndCheck()}
-                        className="h-7 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] inline-flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition cursor-pointer disabled:opacity-50"
+                        className="text-[11px]"
                       >
                         <RefreshCw
-                          className={`w-3 h-3 ${
-                            authBusy || checkingConnection ? "animate-spin" : ""
-                          }`}
+                          className={cn(
+                            "w-3 h-3",
+                            (authBusy || checkingConnection) && "animate-spin"
+                          )}
                         />
                         <span>刷新并检测连接</span>
-                      </button>
+                      </Button>
                     )}
-                    <button
-                      type="button"
+                    <Button
+                      variant="danger"
+                      size="sm"
                       onClick={async () => {
                         await logout();
                         onClose?.();
                       }}
-                      className="h-7 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] inline-flex items-center gap-1.5 text-[11px] text-[var(--status-danger)] transition cursor-pointer"
+                      className="text-[11px]"
                     >
                       <LogOut className="w-3 h-3" />
                       <span>{authSession?.mode === "guest" ? "前往登录" : "退出登录"}</span>
-                    </button>
+                    </Button>
                   </div>
                 </div>
 
@@ -404,7 +425,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                 <div className="pt-3 border-t border-[var(--border-hairline)] grid grid-cols-3 gap-3">
                   <div>
                     <div className="text-[10px] text-[var(--text-muted)]">可用余额</div>
-                    <div className="mt-0.5 text-[13px] font-mono tabular-nums font-medium text-[var(--text-primary)]">
+                    <div className="mt-0.5 text-[13px] font-mono tabular-nums font-linear-medium text-[var(--text-primary)]">
                       {authSession?.user
                         ? formatQuotaDisplay(authSession.user.quota, siteStatus)
                         : billing?.supported && billing.remainingUsd !== undefined
@@ -447,7 +468,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                 <section className="space-y-3">
                   <div className="flex items-center justify-between gap-2">
                     <div>
-                      <h3 className="text-[12px] font-semibold text-[var(--text-primary)]">
+                      <h3 className="text-[12px] font-linear-semibold text-[var(--text-primary)]">
                         API 令牌列表
                       </h3>
                       <p className="text-[11px] text-[var(--text-muted)]">
@@ -462,13 +483,14 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                       value={newTokenName}
                       onChange={(e) => setNewTokenName(e.target.value)}
                       placeholder="新令牌名称，例如 Mizurisu Agent"
-                      className="flex-1 h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)]"
+                      className="flex-1 h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)] linear-focus-ring"
                     />
-                    <button
-                      type="button"
+                    <Button
+                      variant="primary"
+                      size="md"
                       disabled={authBusy}
                       onClick={handleCreateToken}
-                      className="h-8 px-3 rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-[12px] font-medium inline-flex items-center gap-1.5 shrink-0 transition cursor-pointer"
+                      className="text-[12px]"
                     >
                       {authBusy ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -476,7 +498,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                         <Plus className="w-3.5 h-3.5" />
                       )}
                       <span>新建令牌</span>
-                    </button>
+                    </Button>
                   </div>
 
                   {/* 令牌列表 */}
@@ -497,17 +519,18 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                             <div className="min-w-0 space-y-0.5">
                               <div className="flex items-center gap-2">
                                 <span
-                                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                  className={cn(
+                                    "w-1.5 h-1.5 rounded-full shrink-0",
                                     enabled
                                       ? "bg-[var(--status-success)]"
                                       : "bg-[var(--text-muted)]"
-                                  }`}
+                                  )}
                                 />
-                                <span className="font-medium text-[var(--text-primary)] truncate">
+                                <span className="font-linear-medium text-[var(--text-primary)] truncate">
                                   {tk.name || `Token #${tk.id}`}
                                 </span>
                                 {isActive && (
-                                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-[var(--accent-soft)] text-[var(--accent)] font-medium">
+                                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-[var(--accent-soft)] text-[var(--accent)] font-linear-medium">
                                     当前使用
                                   </span>
                                 )}
@@ -523,25 +546,22 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                               </div>
                             </div>
 
-                            <button
-                              type="button"
+                            <Button
+                              variant={isActive ? "ghost" : "secondary"}
+                              size="sm"
                               disabled={isActive || !enabled || authBusy}
                               onClick={() => handleSwitchToken(tk.id)}
-                              className={`h-7 px-2.5 rounded-md text-[11px] font-medium border shrink-0 transition cursor-pointer ${
-                                isActive
-                                  ? "border-[var(--border-hairline)] bg-[var(--bg-elevated)] text-[var(--text-muted)] cursor-default"
-                                  : "border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] text-[var(--text-primary)] disabled:opacity-40"
-                              }`}
+                              className="text-[11px]"
                             >
                               {isActive ? (
-                                <span className="inline-flex items-center gap-1">
+                                <span className="inline-flex items-center gap-1 text-[var(--text-muted)]">
                                   <Check className="w-3 h-3 text-[var(--accent)]" />
                                   已选
                                 </span>
                               ) : (
                                 "切换使用"
                               )}
-                            </button>
+                            </Button>
                           </div>
                         );
                       })
@@ -553,7 +573,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                   <div className="flex items-center gap-2.5 min-w-0">
                     <KeyRound className="w-4 h-4 text-[var(--text-muted)] shrink-0" />
                     <div className="min-w-0">
-                      <div className="font-medium text-[var(--text-primary)]">
+                      <div className="font-linear-medium text-[var(--text-primary)]">
                         当前活动密钥
                       </div>
                       <div className="text-[11px] font-mono text-[var(--text-muted)] truncate">
@@ -561,19 +581,20 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                       </div>
                     </div>
                   </div>
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => setTab("newapi")}
-                    className="h-7 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] text-[11px] text-[var(--text-primary)] shrink-0 cursor-pointer"
+                    className="text-[11px]"
                   >
                     修改密钥
-                  </button>
+                  </Button>
                 </section>
               )}
 
               <section className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] p-3.5 space-y-2.5">
                 <div>
-                  <div className="text-[12px] font-semibold text-[var(--text-primary)]">
+                  <div className="text-[12px] font-linear-semibold text-[var(--text-primary)]">
                     Mizurisu 站点控制台直达
                   </div>
                   <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
@@ -608,10 +629,10 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                       href={item.href}
                       target="_blank"
                       rel="noreferrer"
-                      className="px-3 py-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] flex items-center justify-between gap-2 transition"
+                      className="px-3 py-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] flex items-center justify-between gap-2 transition linear-focus-ring"
                     >
                       <div className="min-w-0">
-                        <div className="font-medium text-[var(--text-primary)] truncate">
+                        <div className="font-linear-medium text-[var(--text-primary)] truncate">
                           {item.label}
                         </div>
                         <div className="text-[10px] text-[var(--text-muted)] truncate mt-0.5">
@@ -625,7 +646,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
               </section>
 
               <details className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] p-3.5">
-                <summary className="text-[11px] font-medium text-[var(--text-secondary)] cursor-pointer select-none">
+                <summary className="text-[11px] font-linear-medium text-[var(--text-secondary)] cursor-pointer select-none">
                   站点部署与免登集成参考（管理员）
                 </summary>
                 <div className="mt-2 space-y-1.5">
@@ -644,26 +665,26 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
           {tab === "newapi" && (
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <label className="block font-medium text-[var(--text-secondary)]">
+                <label className="block font-linear-medium text-[var(--text-secondary)]">
                   工作台名称
                 </label>
                 <input
                   value={config.brandName}
                   onChange={(e) => updateConfig({ brandName: e.target.value })}
                   placeholder="Mizurisu Agent"
-                  className="w-full h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)]"
+                  className="w-full h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)] linear-focus-ring"
                 />
               </div>
 
               <div className="space-y-1.5">
-                <label className="block font-medium text-[var(--text-secondary)]">
+                <label className="block font-linear-medium text-[var(--text-secondary)]">
                   Mizurisu / 服务站点地址 (Base URL)
                 </label>
                 <input
                   value={config.baseUrl}
                   onChange={(e) => updateConfig({ baseUrl: e.target.value })}
                   placeholder="https://www.mizurisu.com"
-                  className="w-full h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)] font-mono"
+                  className="w-full h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)] font-mono linear-focus-ring"
                 />
                 <p className="text-[11px] text-[var(--text-muted)]">
                   填写根域名即可，系统会自动归一化处理 `/v1` 与 `/v1beta` 路径。
@@ -671,7 +692,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
               </div>
 
               <div className="space-y-1.5">
-                <label className="block font-medium text-[var(--text-secondary)]">
+                <label className="block font-linear-medium text-[var(--text-secondary)]">
                   API Key
                 </label>
                 <div className="relative">
@@ -680,20 +701,23 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                     value={config.apiKey}
                     onChange={(e) => updateConfig({ apiKey: e.target.value })}
                     placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx"
-                    className="w-full h-8 pl-3 pr-9 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)] font-mono"
+                    className="w-full h-8 pl-3 pr-9 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[var(--text-primary)] outline-none focus:border-[var(--border-strong)] font-mono linear-focus-ring"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowKey((v) => !v)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                  >
-                    {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </button>
+                  <Tooltip content={showKey ? "隐藏 API Key" : "显示 API Key"} side="left">
+                    <button
+                      type="button"
+                      onClick={() => setShowKey((v) => !v)}
+                      aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer rounded linear-focus-ring"
+                    >
+                      {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </Tooltip>
                 </div>
               </div>
 
               <div className="space-y-1.5">
-                <label className="block font-medium text-[var(--text-secondary)]">
+                <label className="block font-linear-medium text-[var(--text-secondary)]">
                   协议路由策略
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -717,13 +741,14 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                         key={val}
                         type="button"
                         onClick={() => updateConfig({ protocolMode: val })}
-                        className={`text-left p-3 rounded-lg border transition cursor-pointer ${
+                        className={cn(
+                          "text-left p-3 rounded-lg border transition cursor-pointer linear-focus-ring",
                           active
                             ? "border-[var(--accent)] bg-[var(--accent-soft)]"
                             : "border-[var(--border-hairline)] bg-[var(--bg-canvas)] hover:border-[var(--border-strong)]"
-                        }`}
+                        )}
                       >
-                        <div className="font-medium text-[var(--text-primary)]">{title}</div>
+                        <div className="font-linear-medium text-[var(--text-primary)]">{title}</div>
                         <div className="mt-1 text-[11px] text-[var(--text-muted)] leading-snug">
                           {desc}
                         </div>
@@ -734,11 +759,12 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
               </div>
 
               <div className="flex flex-wrap items-center gap-2.5 pt-1">
-                <button
-                  type="button"
+                <Button
+                  variant="primary"
+                  size="md"
                   onClick={handleTest}
                   disabled={modelsLoading}
-                  className="h-8 px-3.5 rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-medium inline-flex items-center gap-1.5 disabled:opacity-50 transition cursor-pointer"
+                  className="text-[12px]"
                 >
                   {modelsLoading ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -746,7 +772,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                     <RefreshCw className="w-3.5 h-3.5" />
                   )}
                   <span>测试连接并同步模型</span>
-                </button>
+                </Button>
                 {models.length > 0 && (
                   <span className="text-[11px] text-[var(--text-muted)] tabular-nums">
                     已同步 {models.length} 个可用模型
@@ -772,7 +798,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
               )}
 
               <div className="pt-3 border-t border-[var(--border-hairline)] space-y-2">
-                <label className="block font-medium text-[var(--text-secondary)]">
+                <label className="block font-linear-medium text-[var(--text-secondary)]">
                   手动补充模型 ID
                 </label>
                 <div className="flex gap-2">
@@ -786,16 +812,12 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                       }
                     }}
                     placeholder="例如 claude-sonnet-4-5-20250929"
-                    className="flex-1 h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] outline-none focus:border-[var(--border-strong)] font-mono"
+                    className="flex-1 h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] outline-none focus:border-[var(--border-strong)] font-mono linear-focus-ring"
                   />
-                  <button
-                    type="button"
-                    onClick={handleAddCustomModel}
-                    className="h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] hover:bg-[var(--bg-hover)] inline-flex items-center gap-1 text-[var(--text-primary)] cursor-pointer"
-                  >
+                  <Button variant="secondary" size="md" onClick={handleAddCustomModel} className="text-[12px]">
                     <Plus className="w-3.5 h-3.5" />
                     <span>添加</span>
-                  </button>
+                  </Button>
                 </div>
 
                 {config.customModels.length > 0 && (
@@ -806,13 +828,16 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                         className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] font-mono text-[11px] text-[var(--text-secondary)]"
                       >
                         <span>{id}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveCustomModel(id)}
-                          className="text-[var(--text-muted)] hover:text-[var(--status-danger)] cursor-pointer"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
+                        <Tooltip content={`移除自定义模型 ${id}`} side="top">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveCustomModel(id)}
+                            aria-label={`移除 ${id}`}
+                            className="text-[var(--text-muted)] hover:text-[var(--status-danger)] cursor-pointer rounded linear-focus-ring"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </Tooltip>
                       </span>
                     ))}
                   </div>
@@ -822,7 +847,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
               <div className="pt-3 border-t border-[var(--border-hairline)] space-y-3">
                 <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] flex items-center justify-between gap-3">
                   <div>
-                    <div className="font-medium text-[var(--text-primary)]">
+                    <div className="font-linear-medium text-[var(--text-primary)]">
                       隐藏非对话模型
                     </div>
                     <div className="text-[11px] text-[var(--text-muted)] mt-0.5">
@@ -844,7 +869,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                   <div className="flex items-center justify-between gap-2">
                     <label
                       htmlFor="custom-system-prompt"
-                      className="font-medium text-[var(--text-primary)]"
+                      className="font-linear-medium text-[var(--text-primary)]"
                     >
                       自定义办公指令（全局 System Prompt 补充）
                     </label>
@@ -865,72 +890,219 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                     }}
                     onBlur={() => void handleSaveCustomPrompt(true)}
                     placeholder="例如：默认输出财务严谨口径，币种保留两位小数；报告结尾统一附带风险提示与下一步行动建议..."
-                    className="w-full p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[12px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--border-strong)] resize-y leading-relaxed"
+                    className="w-full p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[12px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--border-strong)] resize-y leading-relaxed linear-focus-ring"
                   />
                   <div className="flex items-center justify-between gap-2 pt-0.5">
                     <span className="text-[11px] text-[var(--text-muted)]">
                       离开输入框或点击右侧按钮时保存，并自动附加到后续每次 AI 对话中。
                     </span>
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => void handleSaveCustomPrompt(false)}
-                      className="h-7 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] text-[11px] font-medium text-[var(--text-primary)] shrink-0 cursor-pointer transition"
+                      className="text-[11px]"
                     >
                       保存指令
-                    </button>
+                    </Button>
                   </div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Tab 3: 办公技能 */}
+          {/* Tab 3: 外观与快捷键 */}
+          {tab === "appearance" && (
+            <div className="space-y-4">
+              {/* 深色 / 浅色主题切换 */}
+              <section className="p-4 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-3">
+                <div>
+                  <div className="text-[12px] font-linear-semibold text-[var(--text-primary)]">
+                    界面主题色彩
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                    基于 OKLCH 感知均匀色域构建，默认推荐暗夜沉静模式以突出文档与表格主体。
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void updateSettings({ theme: "dark" })}
+                    aria-pressed={settings.theme === "dark"}
+                    className={cn(
+                      "px-3 py-2.5 rounded-lg border flex items-center justify-between gap-2 transition cursor-pointer linear-focus-ring",
+                      settings.theme === "dark"
+                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)]"
+                        : "border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] text-[var(--text-secondary)]"
+                    )}
+                  >
+                    <span className="inline-flex items-center gap-2 font-linear-medium">
+                      <Moon className="w-3.5 h-3.5" />
+                      <span>深色模式 (Dark)</span>
+                    </span>
+                    {settings.theme === "dark" && (
+                      <Check className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void updateSettings({ theme: "light" })}
+                    aria-pressed={settings.theme === "light"}
+                    className={cn(
+                      "px-3 py-2.5 rounded-lg border flex items-center justify-between gap-2 transition cursor-pointer linear-focus-ring",
+                      settings.theme === "light"
+                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-primary)]"
+                        : "border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] text-[var(--text-secondary)]"
+                    )}
+                  >
+                    <span className="inline-flex items-center gap-2 font-linear-medium">
+                      <Sun className="w-3.5 h-3.5" />
+                      <span>浅色模式 (Light)</span>
+                    </span>
+                    {settings.theme === "light" && (
+                      <Check className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+                    )}
+                  </button>
+                </div>
+              </section>
+
+              {/* 高对比度模式 (OKLCH 对比度增强) */}
+              <section className="p-4 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] flex items-center justify-between gap-4">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Contrast className="w-4 h-4 text-[var(--text-secondary)] shrink-0" />
+                    <span className="text-[12px] font-linear-semibold text-[var(--text-primary)]">
+                      高对比度模式（OKLCH 对比度增强）
+                    </span>
+                    {highContrastEnabled && (
+                      <span className="text-[10px] px-1.5 py-px rounded bg-[var(--accent-soft)] text-[var(--accent)] font-linear-medium">
+                        已开启
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
+                    同步拉升深色与浅色模式下的文字亮度差、发丝分割线透明度及强调色对比度，改善强光与长时阅读清晰度。
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={highContrastEnabled}
+                  aria-label="高对比度模式（OKLCH 对比度增强）"
+                  onClick={() => void toggleHighContrast()}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition cursor-pointer linear-focus-ring",
+                    highContrastEnabled
+                      ? "border-[var(--accent)] bg-[var(--accent)]"
+                      : "border-[var(--border-strong)] bg-[var(--bg-elevated)]"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-150",
+                      highContrastEnabled ? "translate-x-[18px]" : "translate-x-[2px]"
+                    )}
+                  />
+                </button>
+              </section>
+
+              {/* 键盘快捷键速查入口 */}
+              <section className="p-4 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Keyboard className="w-4 h-4 text-[var(--text-secondary)] shrink-0" />
+                      <span className="text-[12px] font-linear-semibold text-[var(--text-primary)]">
+                        键盘快捷键指南
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[var(--text-muted)]">
+                      查看命令面板、面板折叠、全屏文档台与会话流全套单键操作。
+                    </p>
+                  </div>
+
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setShortcutHelpOpen(true)}
+                  >
+                    <Keyboard className="w-3.5 h-3.5" />
+                    <span>打开快捷键速查</span>
+                    <Kbd keys="?" />
+                  </Button>
+                </div>
+
+                <div className="pt-2.5 border-t border-[var(--border-hairline)] flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-[var(--text-muted)]">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Kbd keys={["Mod", "K"]} />
+                    <span>命令面板</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Kbd keys="[" />
+                    <span>侧栏</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Kbd keys="]" />
+                    <span>文档台</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Kbd keys="\" />
+                    <span>全屏编辑</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Kbd keys="C" />
+                    <span>新建会话</span>
+                  </span>
+                </div>
+              </section>
+            </div>
+          )}
+
+          {/* Tab 4: 办公技能 */}
           {tab === "skills" && (
             <div className="space-y-5">
               <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-2.5">
-                <div className="font-semibold text-[var(--text-primary)]">
+                <div className="font-linear-semibold text-[var(--text-primary)]">
                   新建自定义办公技能
                 </div>
                 <input
                   value={skillName}
                   onChange={(e) => setSkillName(e.target.value)}
                   placeholder="技能名称，例如：财务对账单核对"
-                  className="w-full h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] outline-none focus:border-[var(--border-strong)]"
+                  className="w-full h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] outline-none focus:border-[var(--border-strong)] linear-focus-ring"
                 />
                 <input
                   value={skillDesc}
                   onChange={(e) => setSkillDesc(e.target.value)}
                   placeholder="简短说明（可选）"
-                  className="w-full h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] outline-none focus:border-[var(--border-strong)]"
+                  className="w-full h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] outline-none focus:border-[var(--border-strong)] linear-focus-ring"
                 />
                 <textarea
                   rows={2}
                   value={skillPrompt}
                   onChange={(e) => setSkillPrompt(e.target.value)}
                   placeholder="填入对话时的默认指令模板..."
-                  className="w-full p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] outline-none focus:border-[var(--border-strong)] resize-none"
+                  className="w-full p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] outline-none focus:border-[var(--border-strong)] resize-none linear-focus-ring"
                 />
                 <textarea
                   rows={2}
                   value={skillHint}
                   onChange={(e) => setSkillHint(e.target.value)}
                   placeholder="附加系统级约束指令（可选）..."
-                  className="w-full p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] outline-none focus:border-[var(--border-strong)] resize-none"
+                  className="w-full p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] outline-none focus:border-[var(--border-strong)] resize-none linear-focus-ring"
                 />
-                <button
-                  type="button"
-                  onClick={handleAddSkill}
-                  className="h-8 px-3 rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-medium inline-flex items-center gap-1.5 cursor-pointer"
-                >
+                <Button variant="primary" size="md" onClick={handleAddSkill} className="text-[12px]">
                   <Plus className="w-3.5 h-3.5" />
                   <span>保存技能</span>
-                </button>
+                </Button>
               </div>
 
               <div className="space-y-2">
-                <div className="font-medium text-[var(--text-secondary)]">
-                  自定义技能 ({customSkills.length})
+                <div className="font-linear-medium text-[var(--text-secondary)]">
+                  自定义技能 (<span className="tabular-nums">{customSkills.length}</span>)
                 </div>
                 {customSkills.length === 0 ? (
                   <div className="text-[11px] text-[var(--text-muted)]">暂无自定义技能</div>
@@ -942,20 +1114,24 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                         className="px-3 py-2 flex items-center justify-between gap-2"
                       >
                         <div className="min-w-0">
-                          <div className="font-medium text-[var(--text-primary)] truncate">
+                          <div className="font-linear-medium text-[var(--text-primary)] truncate">
                             {sk.name}
                           </div>
                           <div className="text-[11px] text-[var(--text-muted)] truncate">
                             {sk.description}
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => deleteCustomSkill(sk.id)}
-                          className="w-6 h-6 inline-flex items-center justify-center rounded hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--status-danger)] cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        <Tooltip content={`删除技能「${sk.name}」`} side="left">
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => deleteCustomSkill(sk.id)}
+                            aria-label={`删除技能 ${sk.name}`}
+                            className="hover:text-[var(--status-danger)]"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </Tooltip>
                       </div>
                     ))}
                   </div>
@@ -963,13 +1139,13 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
               </div>
 
               <div className="space-y-2">
-                <div className="font-medium text-[var(--text-secondary)]">
-                  内置标准技能 ({BUILTIN_SKILLS.length})
+                <div className="font-linear-medium text-[var(--text-secondary)]">
+                  内置标准技能 (<span className="tabular-nums">{BUILTIN_SKILLS.length}</span>)
                 </div>
                 <div className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] divide-y divide-[var(--border-hairline)]">
                   {BUILTIN_SKILLS.map((sk) => (
                     <div key={sk.id} className="px-3 py-2 space-y-0.5">
-                      <div className="font-medium text-[var(--text-primary)]">
+                      <div className="font-linear-medium text-[var(--text-primary)]">
                         {sk.name}
                       </div>
                       <div className="text-[11px] text-[var(--text-muted)]">
@@ -982,14 +1158,14 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
             </div>
           )}
 
-          {/* Tab 4: 安全与备份 */}
+          {/* Tab 5: 安全与备份 */}
           {tab === "data" && (
             <div className="space-y-4">
               <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] flex items-center justify-between gap-3">
                 <div className="flex items-start gap-2.5">
                   <Shield className="w-4 h-4 text-[var(--text-muted)] mt-0.5 shrink-0" />
                   <div>
-                    <div className="font-medium text-[var(--text-primary)]">
+                    <div className="font-linear-medium text-[var(--text-primary)]">
                       删除工作区文件免弹窗确认
                     </div>
                     <div className="text-[11px] text-[var(--text-muted)] mt-0.5">
@@ -1003,12 +1179,13 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                   onChange={(e) =>
                     updateSettings({ autoApproveDelete: e.target.checked })
                   }
+                  aria-label="删除工作区文件免弹窗确认"
                   className="w-4 h-4 accent-[var(--accent)] cursor-pointer shrink-0"
                 />
               </div>
 
               <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-3">
-                <div className="flex items-center gap-2 font-medium text-[var(--text-primary)]">
+                <div className="flex items-center gap-2 font-linear-medium text-[var(--text-primary)]">
                   <Database className="w-4 h-4 text-[var(--text-muted)]" />
                   <span>导出工作区与对话备份</span>
                 </div>
@@ -1018,7 +1195,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
 
                 <label className="flex items-start justify-between gap-3 p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] cursor-pointer">
                   <div className="space-y-0.5">
-                    <div className="font-medium text-[var(--text-primary)]">
+                    <div className="font-linear-medium text-[var(--text-primary)]">
                       安全脱敏模式（不包含 API Key 密钥）
                     </div>
                     <div className="text-[11px] text-[var(--text-muted)]">
@@ -1047,39 +1224,42 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
 
                 {confirmSecretExport && !redactSecrets && (
                   <div className="p-2.5 rounded-md border border-[var(--status-warning)]/50 bg-[var(--bg-surface)] space-y-2">
-                    <div className="text-[11px] font-medium text-[var(--status-warning)]">
+                    <div className="text-[11px] font-linear-medium text-[var(--status-warning)]">
                       二次确认：确定要在备份文件中包含明文 API Key 密钥吗？
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         disabled={exportingBackup}
                         onClick={() => void runExportBackup(true)}
-                        className="h-7 px-2.5 rounded-md bg-[var(--status-warning)] text-black font-medium text-[11px] inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                        className="border-transparent bg-[var(--status-warning)] text-black hover:bg-[var(--status-warning)]/90 text-[11px]"
                       >
                         {exportingBackup && <Loader2 className="w-3 h-3 animate-spin" />}
                         <span>确认导出含密钥备份</span>
-                      </button>
-                      <button
-                        type="button"
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         onClick={() => {
                           setRedactSecrets(true);
                           setConfirmSecretExport(false);
                         }}
-                        className="h-7 px-2.5 rounded-md border border-[var(--border-hairline)] text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
+                        className="text-[11px]"
                       >
                         切回安全脱敏模式
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 )}
 
                 <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="md"
                     disabled={exportingBackup}
                     onClick={handleExportBackupClick}
-                    className="h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] inline-flex items-center gap-1.5 text-[var(--text-primary)] cursor-pointer disabled:opacity-50"
+                    className="text-[12px]"
                   >
                     {exportingBackup ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--text-muted)]" />
@@ -1091,7 +1271,7 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                         ? "导出脱敏备份 (.json)"
                         : "导出含密钥备份 (.json)"}
                     </span>
-                  </button>
+                  </Button>
                   <input
                     ref={importRef}
                     type="file"
@@ -1099,46 +1279,50 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                     onChange={handleImportBackup}
                     className="hidden"
                   />
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="md"
                     onClick={() => importRef.current?.click()}
-                    className="h-8 px-3 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] hover:bg-[var(--bg-hover)] inline-flex items-center gap-1.5 text-[var(--text-primary)] cursor-pointer"
+                    className="text-[12px]"
                   >
                     <Upload className="w-3.5 h-3.5 text-[var(--text-muted)]" />
                     <span>导入备份恢复</span>
-                  </button>
+                  </Button>
                 </div>
               </div>
 
               <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] border-l-2 border-l-[var(--status-danger)] bg-[var(--bg-canvas)] space-y-2">
-                <div className="font-medium text-[var(--status-danger)]">清空本机数据</div>
+                <div className="font-linear-medium text-[var(--status-danger)]">清空本机数据</div>
                 {!confirmReset ? (
-                  <button
-                    type="button"
+                  <Button
+                    variant="danger"
+                    size="md"
                     onClick={() => setConfirmReset(true)}
-                    className="h-8 px-3 rounded-md border border-[var(--border-hairline)] hover:bg-[var(--bg-hover)] text-[var(--status-danger)] cursor-pointer"
+                    className="text-[12px]"
                   >
                     重置全部会话、文件与配置
-                  </button>
+                  </Button>
                 ) : (
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
+                    <Button
+                      variant="danger"
+                      size="md"
                       onClick={async () => {
                         await resetAllData();
                         setConfirmReset(false);
                       }}
-                      className="h-8 px-3 rounded-md bg-[var(--status-danger)] text-white cursor-pointer"
+                      className="border-transparent bg-[var(--status-danger)] text-white hover:bg-[var(--status-danger)]/90 text-[12px]"
                     >
                       确认彻底清空
-                    </button>
-                    <button
-                      type="button"
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="md"
                       onClick={() => setConfirmReset(false)}
-                      className="h-8 px-3 rounded-md border border-[var(--border-hairline)] text-[var(--text-secondary)] cursor-pointer"
+                      className="text-[12px]"
                     >
                       取消
-                    </button>
+                    </Button>
                   </div>
                 )}
               </div>
@@ -1151,33 +1335,18 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
 }
 
 export function SettingsModal() {
-  const { settingsOpen, setSettingsOpen } = useAppStore();
-
-  useEffect(() => {
-    if (!settingsOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !useAppStore.getState().commandPaletteOpen) {
-        setSettingsOpen(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [settingsOpen, setSettingsOpen]);
-
-  if (!settingsOpen) return null;
+  const { settingsOpen, setSettingsOpen, commandPaletteOpen, shortcutHelpOpen } =
+    useAppStore();
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-[2px] p-3 sm:p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) {
-          setSettingsOpen(false);
-        }
-      }}
+    <Dialog
+      open={settingsOpen}
+      onClose={() => setSettingsOpen(false)}
+      ariaLabel="工作台设置"
+      closeOnEscape={!commandPaletteOpen && !shortcutHelpOpen}
+      className="w-full max-w-[780px] h-[82dvh] max-h-[640px] overflow-hidden flex flex-col"
     >
-      <div className="w-full max-w-[760px] h-[82vh] max-h-[620px] rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface)] shadow-[0_24px_64px_rgba(0,0,0,0.6)] overflow-hidden flex flex-col">
-        <SettingsContent onClose={() => setSettingsOpen(false)} />
-      </div>
-    </div>
+      <SettingsContent onClose={() => setSettingsOpen(false)} />
+    </Dialog>
   );
 }
