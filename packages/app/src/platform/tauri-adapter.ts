@@ -1,5 +1,6 @@
 import type {
   ImportedNativeFile,
+  NativeFileMeta,
   PlatformAdapter,
   SessionRequestOptions,
   SessionResponse,
@@ -78,6 +79,39 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     }
   }
 
+  async fetchWebUrl(url: string): Promise<SessionResponse> {
+    const hasTauriRuntime =
+      typeof window !== "undefined" &&
+      Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+    if (hasTauriRuntime) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<SessionResponse>("fetch_web_url", {
+        url,
+        timeoutSecs: 15,
+      });
+    }
+    const res = await globalThis.fetch(url);
+    return {
+      status: res.status,
+      ok: res.ok,
+      text: await res.text(),
+    };
+  }
+
+  async nativeOcrImage(imageBase64: string, lang?: string): Promise<string> {
+    const hasTauriRuntime =
+      typeof window !== "undefined" &&
+      Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+    if (!hasTauriRuntime) {
+      throw new Error("NATIVE_OCR_UNAVAILABLE");
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<string>("native_ocr_image", {
+      imageBase64,
+      lang: lang || null,
+    });
+  }
+
   async exportFile(filename: string, data: Uint8Array, _mimeType: string): Promise<void> {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { writeFile } = await import("@tauri-apps/plugin-fs");
@@ -118,6 +152,62 @@ export class TauriPlatformAdapter implements PlatformAdapter {
 
     await walk(selected, "");
     return { path: selected, files };
+  }
+
+  async pickNativeDirectoryPath(): Promise<string | null> {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({ directory: true, multiple: false });
+    return selected && typeof selected === "string" ? selected : null;
+  }
+
+  async listNativeDirectoryFiles(rootPath: string): Promise<NativeFileMeta[]> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<NativeFileMeta[]>("native_list_workspace_files", {
+      root: rootPath,
+    });
+  }
+
+  async readFromNativeDirectory(rootPath: string, relativePath: string): Promise<Uint8Array> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const bytes = await invoke<number[]>("native_read_workspace_file", {
+      root: rootPath,
+      relativePath,
+    });
+    return new Uint8Array(bytes);
+  }
+
+  async deleteFromNativeDirectory(rootPath: string, relativePath: string): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke<void>("native_delete_workspace_file", {
+      root: rootPath,
+      relativePath,
+    });
+  }
+
+  async renameInNativeDirectory(
+    rootPath: string,
+    oldRelativePath: string,
+    newRelativePath: string
+  ): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke<void>("native_rename_workspace_file", {
+      root: rootPath,
+      oldRel: oldRelativePath,
+      newRel: newRelativePath,
+    });
+  }
+
+  async watchNativeDirectory(rootPath: string, onChanged: () => void): Promise<() => void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+    await invoke<void>("native_watch_workspace_dir", { root: rootPath });
+    const unlisten = await listen("workspace-fs-changed", () => {
+      onChanged();
+    });
+    return () => {
+      unlisten();
+      invoke<void>("native_unwatch_workspace_dir").catch(() => undefined);
+    };
   }
 
   async writeToNativeDirectory(

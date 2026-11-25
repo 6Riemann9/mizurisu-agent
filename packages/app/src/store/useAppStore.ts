@@ -1,6 +1,8 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { create } from "zustand";
+import { buildHandoffFromSession } from "../agent/extensions";
 import { PiAgentRunner } from "../agent/runtime";
+import { parseSkillMarkdown } from "../agent/skill-md";
 import { BUILTIN_SKILLS } from "../agent/skills";
 import {
   authenticateAndBootstrapKey,
@@ -46,15 +48,19 @@ import type {
   AuthSession,
   BillingInfo,
   ChatSession,
+  HandoffPayload,
   ModelInfo,
   NewApiConfig,
   NewApiSiteStatus,
   NewApiTokenItem,
+  QuestionnaireRequest,
   SkillTemplate,
   ToastAction,
   ToastItem,
+  TokenBurdenReport,
   UiMessage,
   WorkspaceFileMeta,
+  WorkspaceProfile,
 } from "../types";
 
 export type MobileTab = "chat" | "files" | "preview" | "settings";
@@ -88,7 +94,7 @@ function getDefaultSettings(): AppSettings {
   };
 }
 
-function createEmptySession(title = "新对话"): ChatSession {
+function createEmptySession(title = "新对话", workspaceId?: string): ChatSession {
   const now = Date.now();
   return {
     id: `sess_${now}_${Math.random().toString(36).slice(2, 7)}`,
@@ -97,8 +103,15 @@ function createEmptySession(title = "新对话"): ChatSession {
     updatedAt: now,
     messages: [],
     totalTokens: 0,
+    ...(workspaceId && workspaceId !== "default" ? { workspaceId } : {}),
   };
 }
+
+const DEFAULT_WORKSPACE: WorkspaceProfile = {
+  id: "default",
+  name: "默认工作区",
+  createdAt: 0,
+};
 
 function applyThemeToDocument(theme: "light" | "dark", highContrast = false): void {
   if (typeof document === "undefined") return;
@@ -183,7 +196,12 @@ export interface AppState {
   previewExpanded: boolean;
   customSkills: SkillTemplate[];
   activeSkillId?: string;
+  workspaces: WorkspaceProfile[];
+  activeWorkspaceId: string;
   pendingApproval: ApprovalRequest | null;
+  pendingQuestionnaire: QuestionnaireRequest | null;
+  tokenBurden?: TokenBurdenReport;
+  composerDraft?: string;
   settingsOpen: boolean;
   shortcutHelpOpen: boolean;
   mobileTab: MobileTab;
@@ -253,20 +271,51 @@ export interface AppState {
   exportWorkspaceFile: (path: string) => Promise<void>;
   exportWorkspaceZip: () => Promise<void>;
   mountNativeDirectory: () => Promise<void>;
+  createWorkspace: (name: string, nativeDir?: string) => Promise<WorkspaceProfile>;
+  switchWorkspace: (workspaceId: string) => Promise<void>;
+  deleteWorkspace: (workspaceId: string) => Promise<void>;
+  openNativeFolderWorkspace: () => Promise<void>;
 
   setActiveSkill: (skillId?: string) => void;
   saveCustomSkill: (skill: SkillTemplate) => Promise<void>;
   deleteCustomSkill: (id: string) => Promise<void>;
+  importSkillMarkdown: (rawMarkdown: string, fallbackName?: string) => Promise<SkillTemplate>;
 
   resolveApproval: (approved: boolean) => void;
+  resolveQuestionnaire: (answers: Record<string, string[]> | null) => void;
+  togglePlugin: (pluginId: string, enabled: boolean) => Promise<void>;
+  toggleProtectedPath: (path: string) => Promise<boolean>;
+  handoffActiveSession: (customPayload?: HandoffPayload) => Promise<void>;
+  clearComposerDraft: () => void;
   resetAllData: () => Promise<void>;
 }
 
 let runnerSingleton: PiAgentRunner | null = null;
 let vfsUnsubscribe: (() => void) | null = null;
+let nativeWatchStop: (() => void) | null = null;
 let initPromise: Promise<void> | null = null;
 let fileListSeq = 0;
 const toastTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+async function syncNativeDirWatcher(nativeDir?: string): Promise<void> {
+  if (nativeWatchStop) {
+    try {
+      nativeWatchStop();
+    } catch {
+      // 忽略清理异常
+    }
+    nativeWatchStop = null;
+  }
+  const cleanDir = nativeDir?.trim();
+  if (!cleanDir) return;
+  const platform = getPlatformAdapter();
+  if (!platform.watchNativeDirectory) return;
+  nativeWatchStop = await platform
+    .watchNativeDirectory(cleanDir, () => {
+      workspaceVfs.emitSync();
+    })
+    .catch(() => null);
+}
 
 export const useAppStore = create<AppState>((set, get) => {
   const ensureRunner = (): PiAgentRunner => {
@@ -309,6 +358,41 @@ export const useAppStore = create<AppState>((set, get) => {
         set((state) =>
           state.pendingApproval?.id === approvalId ? { pendingApproval: null } : {}
         );
+      },
+      onUpdateTodos: (sessionId, todos) => {
+        set((state) => {
+          const sessions = state.sessions.map((s) =>
+            s.id === sessionId ? { ...s, todos, updatedAt: Date.now() } : s
+          );
+          const target = sessions.find((s) => s.id === sessionId);
+          if (target) {
+            saveSession(target).catch(() => undefined);
+          }
+          return { sessions };
+        });
+      },
+      onRequestQuestionnaire: (req) => {
+        set({ pendingQuestionnaire: req });
+      },
+      onCancelQuestionnaire: (id) => {
+        set((state) =>
+          state.pendingQuestionnaire?.id === id ? { pendingQuestionnaire: null } : {}
+        );
+      },
+      onHandoffSession: async (payload) => {
+        await get().handoffActiveSession(payload);
+      },
+      onTokenBurdenUpdate: (report) => {
+        set({ tokenBurden: report });
+      },
+      onSubagentUsage: (sessionId, usage) => {
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === sessionId
+              ? { ...s, totalTokens: s.totalTokens + (usage.totalTokens || 0) }
+              : s
+          ),
+        }));
       },
       onRunFinished: (sessionId) => {
         // 仅当没有新的运行接管时结束流式状态，防止切换会话触发的旧任务竞态覆盖
@@ -401,6 +485,7 @@ export const useAppStore = create<AppState>((set, get) => {
         params.imageContents && params.imageContents.length > 0
           ? params.imageContents
           : undefined,
+      initialTodos: params.session.todos,
     });
   };
 
@@ -424,7 +509,10 @@ export const useAppStore = create<AppState>((set, get) => {
     previewOpen: false,
     previewExpanded: false,
     customSkills: [],
+    workspaces: [DEFAULT_WORKSPACE],
+    activeWorkspaceId: "default",
     pendingApproval: null,
+    pendingQuestionnaire: null,
     settingsOpen: false,
     shortcutHelpOpen: false,
     mobileTab: "chat",
@@ -436,14 +524,23 @@ export const useAppStore = create<AppState>((set, get) => {
 
       initPromise = (async () => {
         try {
-          const [savedConfig, savedSettings, savedAuthSession, savedSessions, savedSkills] =
-            await Promise.all([
-              kvGet<NewApiConfig>("newapi_config"),
-              kvGet<AppSettings>("app_settings"),
-              kvGet<AuthSession | null>("auth_session"),
-              loadAllSessions(),
-              dbListCustomSkills(),
-            ]);
+          const [
+            savedConfig,
+            savedSettings,
+            savedAuthSession,
+            savedSessions,
+            savedSkills,
+            savedWorkspaces,
+            savedActiveWorkspaceId,
+          ] = await Promise.all([
+            kvGet<NewApiConfig>("newapi_config"),
+            kvGet<AppSettings>("app_settings"),
+            kvGet<AuthSession | null>("auth_session"),
+            loadAllSessions(),
+            dbListCustomSkills(),
+            kvGet<WorkspaceProfile[]>("workspaces_meta"),
+            kvGet<string>("active_workspace_id"),
+          ]);
 
           const defaultsConfig = getDefaultConfig();
           let config: NewApiConfig = {
@@ -488,17 +585,38 @@ export const useAppStore = create<AppState>((set, get) => {
             };
           }
 
-          if (settings.mountedNativeDir) {
-            workspaceVfs.setMountedNativeDir(settings.mountedNativeDir);
+          let workspaces: WorkspaceProfile[] =
+            savedWorkspaces && savedWorkspaces.length > 0
+              ? savedWorkspaces
+              : [
+                  {
+                    ...DEFAULT_WORKSPACE,
+                    ...(settings.mountedNativeDir ? { nativeDir: settings.mountedNativeDir } : {}),
+                  },
+                ];
+          if (!workspaces.some((w) => w.id === "default")) {
+            workspaces = [DEFAULT_WORKSPACE, ...workspaces];
           }
+          const activeWorkspaceId =
+            savedActiveWorkspaceId && workspaces.some((w) => w.id === savedActiveWorkspaceId)
+              ? savedActiveWorkspaceId
+              : "default";
+          const activeWs = workspaces.find((w) => w.id === activeWorkspaceId) ?? workspaces[0];
+
+          workspaceVfs.setActiveWorkspace(activeWorkspaceId, activeWs.nativeDir);
+          await syncNativeDirWatcher(activeWs.nativeDir);
 
           await workspaceVfs.seedStarterWorkspaceIfEmpty();
           const files = await workspaceVfs.listFiles();
 
           let sessions = savedSessions;
-          if (sessions.length === 0) {
-            sessions = [createEmptySession()];
-            await saveSession(sessions[0]);
+          const wsSessions = sessions.filter(
+            (s) => (s.workspaceId || "default") === activeWorkspaceId
+          );
+          if (wsSessions.length === 0) {
+            const first = createEmptySession("新对话", activeWorkspaceId);
+            sessions = [first, ...sessions];
+            await saveSession(first);
           }
 
           if (!vfsUnsubscribe) {
@@ -522,6 +640,12 @@ export const useAppStore = create<AppState>((set, get) => {
                   if (state.activePreviewPath !== ev.path) return {};
                   return { previewRevision: state.previewRevision + 1 };
                 });
+              } else if (ev.type === "sync") {
+                set((state) =>
+                  state.activePreviewPath
+                    ? { previewRevision: state.previewRevision + 1 }
+                    : {}
+                );
               }
 
               const seq = ++fileListSeq;
@@ -538,6 +662,9 @@ export const useAppStore = create<AppState>((set, get) => {
           const starterPreview =
             files.find((f) => f.path.endsWith(".xlsx"))?.path ?? files[0]?.path ?? null;
 
+          const firstWsSession =
+            sessions.find((s) => (s.workspaceId || "default") === activeWorkspaceId) ?? sessions[0];
+
           set({
             initialized: true,
             config,
@@ -545,9 +672,11 @@ export const useAppStore = create<AppState>((set, get) => {
             authSession,
             siteStatus: authSession?.siteStatus,
             sessions,
-            activeSessionId: sessions[0].id,
+            activeSessionId: firstWsSession.id,
             files,
             customSkills: savedSkills,
+            workspaces,
+            activeWorkspaceId,
             activePreviewPath: starterPreview,
             previewOpen: Boolean(starterPreview),
           });
@@ -1155,7 +1284,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (get().isStreaming || get().pendingApproval) {
         get().abortRun();
       }
-      const next = createEmptySession();
+      const next = createEmptySession("新对话", get().activeWorkspaceId);
       set((state) => ({
         sessions: [next, ...state.sessions],
         activeSessionId: next.id,
@@ -1190,16 +1319,18 @@ export const useAppStore = create<AppState>((set, get) => {
         get().abortRun({ discardResult: true });
       }
       await deleteSessionById(id);
+      const activeWsId = get().activeWorkspaceId;
       const remaining = get().sessions.filter((s) => s.id !== id);
-      if (remaining.length === 0) {
-        const fresh = createEmptySession();
+      const wsRemaining = remaining.filter((s) => (s.workspaceId || "default") === activeWsId);
+      if (wsRemaining.length === 0) {
+        const fresh = createEmptySession("新对话", activeWsId);
         await saveSession(fresh);
-        set({ sessions: [fresh], activeSessionId: fresh.id });
+        set({ sessions: [fresh, ...remaining], activeSessionId: fresh.id });
       } else {
         set((state) => ({
           sessions: remaining,
           activeSessionId:
-            state.activeSessionId === id ? remaining[0].id : state.activeSessionId,
+            state.activeSessionId === id ? wsRemaining[0].id : state.activeSessionId,
         }));
       }
       if (snapshot) {
@@ -1477,8 +1608,12 @@ export const useAppStore = create<AppState>((set, get) => {
       if (pending) {
         pending.resolve(false);
       }
+      const pendingQ = get().pendingQuestionnaire;
+      if (pendingQ) {
+        pendingQ.resolve(null);
+      }
       ensureRunner().abort(options);
-      set({ isStreaming: false, pendingApproval: null });
+      set({ isStreaming: false, pendingApproval: null, pendingQuestionnaire: null });
     },
 
     refreshFiles: async () => {
@@ -1587,13 +1722,121 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     mountNativeDirectory: async () => {
-      const res = await getPlatformAdapter().pickNativeDirectory();
+      const platform = getPlatformAdapter();
+      const { activeWorkspaceId, workspaces } = get();
+
+      // Desktop 优先启用「真本地文件夹模式」（直接按需读写删本地磁盘并监听外部修改，无 250 文件拷贝上限）
+      if (platform.pickNativeDirectoryPath && platform.listNativeDirectoryFiles) {
+        const dirPath = await platform.pickNativeDirectoryPath();
+        if (!dirPath) return;
+        const nextWorkspaces = workspaces.map((w) =>
+          w.id === activeWorkspaceId ? { ...w, nativeDir: dirPath } : w
+        );
+        workspaceVfs.setActiveWorkspace(activeWorkspaceId, dirPath);
+        await kvSet("workspaces_meta", nextWorkspaces);
+        await get().updateSettings({ mountedNativeDir: dirPath });
+        await syncNativeDirWatcher(dirPath);
+        const files = await workspaceVfs.listFiles();
+        set({
+          workspaces: nextWorkspaces,
+          files,
+          activePreviewPath: files[0]?.path ?? null,
+          previewOpen: files.length > 0,
+          statusBanner: `已直连本地目录：${dirPath}（${files.length} 个文件）`,
+        });
+        setTimeout(() => set({ statusBanner: undefined }), 4000);
+        return;
+      }
+
+      const res = await platform.pickNativeDirectory();
       if (!res) return;
       workspaceVfs.setMountedNativeDir(res.path);
       await get().updateSettings({ mountedNativeDir: res.path });
       await workspaceVfs.importBatch(res.files, { skipNativeSync: true });
       set({ statusBanner: `已挂载本机目录：${res.path}（同步 ${res.files.length} 个文件）` });
       setTimeout(() => set({ statusBanner: undefined }), 4000);
+    },
+
+    switchWorkspace: async (workspaceId) => {
+      const target = get().workspaces.find((w) => w.id === workspaceId);
+      if (!target) return;
+      if (get().isStreaming || get().pendingApproval) {
+        get().abortRun();
+      }
+
+      workspaceVfs.setActiveWorkspace(target.id, target.nativeDir);
+      await kvSet("active_workspace_id", target.id);
+      await get().updateSettings({ mountedNativeDir: target.nativeDir });
+      await syncNativeDirWatcher(target.nativeDir);
+
+      const files = await workspaceVfs.listFiles();
+      let sessions = get().sessions;
+      let matching = sessions.filter((s) => (s.workspaceId || "default") === target.id);
+      if (matching.length === 0) {
+        const fresh = createEmptySession("新对话", target.id);
+        sessions = [fresh, ...sessions];
+        matching = [fresh];
+        await saveSession(fresh);
+      }
+
+      const nextPreview =
+        files.find((f) => f.path.endsWith(".xlsx"))?.path ?? files[0]?.path ?? null;
+
+      set({
+        activeWorkspaceId: target.id,
+        sessions,
+        activeSessionId: matching[0].id,
+        files,
+        activePreviewPath: nextPreview,
+        previewOpen: Boolean(nextPreview),
+        tokenBurden: undefined,
+      });
+      get().pushToast(`已切换工作区：${target.name}`, "info");
+    },
+
+    createWorkspace: async (name, nativeDir) => {
+      const cleanName = name.trim() || "新建项目";
+      const profile: WorkspaceProfile = {
+        id: `ws_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        name: cleanName,
+        ...(nativeDir?.trim() ? { nativeDir: nativeDir.trim() } : {}),
+        createdAt: Date.now(),
+      };
+      const next = [...get().workspaces, profile];
+      await kvSet("workspaces_meta", next);
+      set({ workspaces: next });
+      await get().switchWorkspace(profile.id);
+      return profile;
+    },
+
+    deleteWorkspace: async (workspaceId) => {
+      if (!workspaceId || workspaceId === "default") {
+        throw new Error("默认工作区不能删除");
+      }
+      const next = get().workspaces.filter((w) => w.id !== workspaceId);
+      await workspaceVfs.purgeWorkspaceFiles(workspaceId);
+      await kvSet("workspaces_meta", next);
+      set({ workspaces: next });
+      if (get().activeWorkspaceId === workspaceId) {
+        await get().switchWorkspace("default");
+      }
+    },
+
+    openNativeFolderWorkspace: async () => {
+      const platform = getPlatformAdapter();
+      if (!platform.pickNativeDirectoryPath) {
+        await get().mountNativeDirectory();
+        return;
+      }
+      const dirPath = await platform.pickNativeDirectoryPath();
+      if (!dirPath) return;
+      const existing = get().workspaces.find((w) => w.nativeDir === dirPath);
+      if (existing) {
+        await get().switchWorkspace(existing.id);
+        return;
+      }
+      const folderName = dirPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "本地文件夹";
+      await get().createWorkspace(folderName, dirPath);
     },
 
     setActiveSkill: (skillId) => set({ activeSkillId: skillId }),
@@ -1613,6 +1856,14 @@ export const useAppStore = create<AppState>((set, get) => {
       }));
     },
 
+    importSkillMarkdown: async (rawMarkdown, fallbackName) => {
+      const parsed = parseSkillMarkdown(rawMarkdown, fallbackName);
+      await dbSaveCustomSkill(parsed);
+      const customSkills = await dbListCustomSkills();
+      set({ customSkills });
+      return parsed;
+    },
+
     resolveApproval: (approved) => {
       const pending = get().pendingApproval;
       if (pending) {
@@ -1620,6 +1871,52 @@ export const useAppStore = create<AppState>((set, get) => {
         set({ pendingApproval: null });
       }
     },
+
+    resolveQuestionnaire: (answers) => {
+      const pendingQ = get().pendingQuestionnaire;
+      if (pendingQ) {
+        pendingQ.resolve(answers);
+        set({ pendingQuestionnaire: null });
+      }
+    },
+
+    togglePlugin: async (pluginId, enabled) => {
+      const prev = get().settings.enabledPlugins || {};
+      await get().updateSettings({
+        enabledPlugins: { ...prev, [pluginId]: enabled },
+      });
+    },
+
+    toggleProtectedPath: async (path) => {
+      const clean = path.replace(/\\/g, "/").replace(/^\/+/, "").trim();
+      const prev = get().settings.protectedPaths || [];
+      const exists = prev.includes(clean);
+      const next = exists ? prev.filter((p) => p !== clean) : [...prev, clean];
+      await get().updateSettings({ protectedPaths: next });
+      return !exists;
+    },
+
+    handoffActiveSession: async (customPayload) => {
+      const { sessions, activeSessionId } = get();
+      const source = sessions.find((s) => s.id === activeSessionId);
+      const payload =
+        customPayload ?? buildHandoffFromSession(source, source?.todos || []);
+      const next = createEmptySession(payload.title || "接力新会话");
+      if (source?.workspaceId) {
+        next.workspaceId = source.workspaceId;
+      }
+      set((state) => ({
+        sessions: [next, ...state.sessions],
+        activeSessionId: next.id,
+        mobileTab: "chat",
+        composerDraft: payload.promptDraft,
+        tokenBurden: undefined,
+      }));
+      await saveSession(next);
+      get().pushToast(`已创建接力新会话「${next.title}」，按 Enter 即可发送继续`, "success");
+    },
+
+    clearComposerDraft: () => set({ composerDraft: undefined }),
 
     resetAllData: async () => {
       if (get().isStreaming || get().pendingApproval) {
@@ -1634,13 +1931,18 @@ export const useAppStore = create<AppState>((set, get) => {
       set({
         isStreaming: false,
         pendingApproval: null,
+        pendingQuestionnaire: null,
+        tokenBurden: undefined,
+        composerDraft: undefined,
         sessions: [],
         activeSessionId: "",
         toasts: [],
       });
+      await syncNativeDirWatcher(undefined);
+      workspaceVfs.setActiveWorkspace("default", undefined);
       await getPlatformAdapter().clearSessionCookies?.().catch(() => undefined);
       await clearAllLocalData();
-      const fresh = createEmptySession();
+      const fresh = createEmptySession("新对话", "default");
       await saveSession(fresh);
       await workspaceVfs.seedStarterWorkspaceIfEmpty();
       const files = await workspaceVfs.listFiles();
@@ -1662,8 +1964,13 @@ export const useAppStore = create<AppState>((set, get) => {
         billing: undefined,
         sessions: [fresh],
         activeSessionId: fresh.id,
+        workspaces: [DEFAULT_WORKSPACE],
+        activeWorkspaceId: "default",
         isStreaming: false,
         pendingApproval: null,
+        pendingQuestionnaire: null,
+        tokenBurden: undefined,
+        composerDraft: undefined,
         toasts: [],
         files,
         customSkills: [],

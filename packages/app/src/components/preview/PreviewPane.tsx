@@ -315,23 +315,52 @@ export function PreviewPane() {
           )}
 
           {snapshots.length > 0 && (
-            <Tooltip content="版本快照与回滚" side="bottom">
-              <Button
-                variant={historyOpen ? "secondary" : "ghost"}
-                size="xs"
-                onClick={() => setHistoryOpen((v) => !v)}
-                aria-expanded={historyOpen}
-                aria-label="版本快照与回滚"
-                className={cn(
-                  "h-7 px-1.5 gap-1 text-[11px]",
-                  historyOpen &&
-                    "bg-[var(--bg-active)] border-[var(--border-strong)] text-[var(--text-primary)]"
-                )}
+            <>
+              <Tooltip
+                content={`快捷撤销上次改动（恢复至：${snapshots[0].note || "上一版本"}）`}
+                side="bottom"
               >
-                <History className="w-3.5 h-3.5" />
-                <span className="font-mono tabular-nums text-[10px]">{snapshots.length}</span>
-              </Button>
-            </Tooltip>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={restoringId !== null}
+                  onClick={async () => {
+                    const latest = snapshots[0];
+                    if (!latest) return;
+                    setRestoringId(latest.id);
+                    try {
+                      await workspaceVfs.restoreSnapshot(latest.id, activePreviewPath);
+                      pushToast(`已撤销改动，恢复至：${latest.note || "上一版本"}`, "success");
+                    } finally {
+                      setRestoringId(null);
+                    }
+                  }}
+                  aria-label="撤销上次改动"
+                  className="h-7 px-1.5 gap-1 text-[11px]"
+                >
+                  <RotateCcw className="w-3 h-3 text-[var(--status-warning)]" />
+                  <span className="hidden @[420px]:inline">撤销改动</span>
+                </Button>
+              </Tooltip>
+
+              <Tooltip content="版本快照与回滚" side="bottom">
+                <Button
+                  variant={historyOpen ? "secondary" : "ghost"}
+                  size="xs"
+                  onClick={() => setHistoryOpen((v) => !v)}
+                  aria-expanded={historyOpen}
+                  aria-label="版本快照与回滚"
+                  className={cn(
+                    "h-7 px-1.5 gap-1 text-[11px]",
+                    historyOpen &&
+                      "bg-[var(--bg-active)] border-[var(--border-strong)] text-[var(--text-primary)]"
+                  )}
+                >
+                  <History className="w-3.5 h-3.5" />
+                  <span className="font-mono tabular-nums text-[10px]">{snapshots.length}</span>
+                </Button>
+              </Tooltip>
+            </>
           )}
 
           <Tooltip content="导出 / 分享" side="bottom">

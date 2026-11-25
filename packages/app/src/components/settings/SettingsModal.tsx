@@ -13,6 +13,7 @@ import {
   LogOut,
   Moon,
   Plus,
+  Puzzle,
   RefreshCw,
   Server,
   Shield,
@@ -23,25 +24,28 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createDefaultExtensionHost, listMcpServerTools } from "../../agent/extensions";
 import { BUILTIN_SKILLS } from "../../agent/skills";
 import { formatQuotaDisplay, maskApiKey } from "../../newapi/auth";
 import { getMizurisuConsoleLinks } from "../../newapi/client";
 import { getPlatformAdapter } from "../../platform";
+import { APP_VERSION, checkLatestRelease, type ReleaseUpdateResult } from "../../platform/updater";
 import {
   exportBackupBundle,
   importBackupBundle,
   type BackupBundle,
 } from "../../storage/db";
 import { useAppStore } from "../../store/useAppStore";
-import type { ProtocolMode, SkillTemplate } from "../../types";
+import type { McpServerConfig, ProtocolMode, SkillTemplate } from "../../types";
 import { Button, Dialog, Kbd, Tooltip, cn } from "../ui";
 
-type SettingsTab = "account" | "newapi" | "appearance" | "skills" | "data";
+type SettingsTab = "account" | "newapi" | "plugins" | "appearance" | "skills" | "data";
 
 const NAV_ITEMS: Array<{ id: SettingsTab; label: string; icon: typeof User }> = [
   { id: "account", label: "账号与令牌", icon: User },
   { id: "newapi", label: "中转站与模型", icon: Server },
+  { id: "plugins", label: "插件中心", icon: Puzzle },
   { id: "appearance", label: "外观与快捷键", icon: Contrast },
   { id: "skills", label: "办公技能", icon: Wand2 },
   { id: "data", label: "安全与备份", icon: Shield },
@@ -70,6 +74,8 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
     logout,
     saveCustomSkill,
     deleteCustomSkill,
+    importSkillMarkdown,
+    togglePlugin,
     resetAllData,
     pushToast,
   } = useAppStore();
@@ -93,11 +99,34 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
   const [skillDesc, setSkillDesc] = useState("");
   const [skillPrompt, setSkillPrompt] = useState("");
   const [skillHint, setSkillHint] = useState("");
+  const [skillUrlInput, setSkillUrlInput] = useState("");
+  const [importingSkillUrl, setImportingSkillUrl] = useState(false);
+
+  const [mcpName, setMcpName] = useState("");
+  const [mcpUrl, setMcpUrl] = useState("");
+  const [mcpTransport, setMcpTransport] = useState<"streamable-http" | "sse">("streamable-http");
+  const [mcpToken, setMcpToken] = useState("");
+  const [testingMcpId, setTestingMcpId] = useState<string | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<ReleaseUpdateResult | null>(null);
 
   const importRef = useRef<HTMLInputElement>(null);
+  const skillMdInputRef = useRef<HTMLInputElement>(null);
   const siteStatus = authSession?.siteStatus;
   const consoleLinks = getMizurisuConsoleLinks(authSession?.baseUrl || config.baseUrl);
   const highContrastEnabled = Boolean(settings.highContrast);
+
+  const extensionList = useMemo(
+    () => createDefaultExtensionHost().listExtensions(settings.enabledPlugins),
+    [settings.enabledPlugins]
+  );
+  const totalEnabledPluginTokens = useMemo(
+    () =>
+      extensionList
+        .filter((e) => e.enabled)
+        .reduce((sum, e) => sum + e.estimatedToolTokens, 0),
+    [extensionList]
+  );
 
   useEffect(() => {
     setPromptDraft(settings.customSystemPrompt ?? "");
@@ -911,6 +940,304 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
             </div>
           )}
 
+          {/* Tab 2.5: Pi 插件中心 */}
+          {tab === "plugins" && (
+            <div className="space-y-4">
+              <section className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="font-linear-semibold text-[var(--text-primary)]">
+                    Mizurisu-Pi 扩展插件中心
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                    关闭不需要的插件后，其工具定义不会注入上下文，既省 Token 又降低模型误调用。
+                  </p>
+                </div>
+                <span className="font-mono tabular-nums text-[11px] px-2 py-0.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[var(--text-secondary)]">
+                  已启用工具约 {totalEnabledPluginTokens.toLocaleString()} tokens
+                </span>
+              </section>
+
+              <div className="rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] divide-y divide-[var(--border-hairline)]">
+                {extensionList.map((ext) => (
+                  <div
+                    key={ext.id}
+                    className="p-3.5 flex items-start justify-between gap-3"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-linear-medium text-[var(--text-primary)]">
+                          {ext.name}
+                        </span>
+                        <span className="font-mono text-[10px] px-1.5 py-px rounded border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[var(--text-muted)]">
+                          {ext.id}
+                        </span>
+                        {ext.toolNames.length > 0 && (
+                          <span className="font-mono tabular-nums text-[10px] text-[var(--text-muted)]">
+                            {ext.toolNames.length} 工具 · ~{ext.estimatedToolTokens} tokens
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
+                        {ext.description}
+                      </p>
+                      {ext.toolNames.length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-0.5">
+                          {ext.toolNames.map((tName) => (
+                            <span
+                              key={tName}
+                              className="font-mono text-[10px] px-1.5 py-px rounded bg-[var(--surface-subtle)] text-[var(--text-secondary)]"
+                            >
+                              {tName}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={ext.enabled}
+                      aria-label={`切换插件 ${ext.name}`}
+                      onClick={() => void togglePlugin(ext.id, !ext.enabled)}
+                      className={cn(
+                        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition cursor-pointer linear-focus-ring mt-0.5",
+                        ext.enabled
+                          ? "border-[var(--accent)] bg-[var(--accent)]"
+                          : "border-[var(--border-strong)] bg-[var(--bg-elevated)]"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-150",
+                          ext.enabled ? "translate-x-[18px]" : "translate-x-[2px]"
+                        )}
+                      />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {/* 免费联网检索与只读保护规则补充配置 */}
+              <section className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-3">
+                <div className="font-linear-semibold text-[var(--text-primary)]">
+                  免费联网源与受保护原件规则
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <label className="block space-y-1">
+                    <span className="text-[11px] text-[var(--text-secondary)]">
+                      自定义 SearXNG 搜索地址（可选）
+                    </span>
+                    <input
+                      type="text"
+                      value={settings.customSearxngUrl || ""}
+                      onChange={(e) =>
+                        void updateSettings({ customSearxngUrl: e.target.value.trim() })
+                      }
+                      placeholder="https://searx.example.com"
+                      className="w-full h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] font-mono text-[11px] outline-none focus:border-[var(--border-strong)] linear-focus-ring"
+                    />
+                  </label>
+                  <label className="block space-y-1">
+                    <span className="text-[11px] text-[var(--text-secondary)]">
+                      Web 端同域抓取代理（可选）
+                    </span>
+                    <input
+                      type="text"
+                      value={settings.webProxyUrl || ""}
+                      onChange={(e) =>
+                        void updateSettings({ webProxyUrl: e.target.value.trim() })
+                      }
+                      placeholder="https://www.mizurisu.com/api/fetch"
+                      className="w-full h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] font-mono text-[11px] outline-none focus:border-[var(--border-strong)] linear-focus-ring"
+                    />
+                  </label>
+                </div>
+
+                <label className="block space-y-1">
+                  <span className="text-[11px] text-[var(--text-secondary)]">
+                    受保护只读路径（每行一条，支持 `*` 通配，也可在左侧文件栏点锁图标切换）
+                  </span>
+                  <textarea
+                    rows={2}
+                    value={(settings.protectedPaths || []).join("\n")}
+                    onChange={(e) =>
+                      void updateSettings({
+                        protectedPaths: e.target.value
+                          .split(/\r?\n/)
+                          .map((s) => s.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                    placeholder="例如：&#10;重要合同原件.docx&#10;templates/*.xlsx"
+                    className="w-full p-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] font-mono text-[11px] outline-none focus:border-[var(--border-strong)] resize-y linear-focus-ring"
+                  />
+                </label>
+              </section>
+
+              {/* Remote MCP 服务器配置（按需发现省 Token） */}
+              <section className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-3">
+                <div>
+                  <div className="font-linear-semibold text-[var(--text-primary)]">
+                    Remote MCP 服务器（Streamable HTTP / SSE，三端通用）
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                    接入后仅占用约 200 Token 的单一 `mcp_proxy` 按需发现工具；无启用服务器时 0 Token 开销。
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    value={mcpName}
+                    onChange={(e) => setMcpName(e.target.value)}
+                    placeholder="服务名称，如 飞书助手"
+                    className="h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[11.5px] outline-none focus:border-[var(--border-strong)] linear-focus-ring"
+                  />
+                  <select
+                    value={mcpTransport}
+                    onChange={(e) => setMcpTransport(e.target.value as "streamable-http" | "sse")}
+                    className="h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[11.5px] outline-none focus:border-[var(--border-strong)] linear-focus-ring"
+                  >
+                    <option value="streamable-http">Streamable HTTP</option>
+                    <option value="sse">SSE (HTTP POST)</option>
+                  </select>
+                  <input
+                    value={mcpUrl}
+                    onChange={(e) => setMcpUrl(e.target.value)}
+                    placeholder="Endpoint URL，如 https://mcp.example.com/mcp"
+                    className="sm:col-span-2 h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] font-mono text-[11px] outline-none focus:border-[var(--border-strong)] linear-focus-ring"
+                  />
+                  <input
+                    value={mcpToken}
+                    onChange={(e) => setMcpToken(e.target.value)}
+                    placeholder="Bearer Token（可选，将作为 Authorization 请求头发送）"
+                    className="sm:col-span-2 h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] font-mono text-[11px] outline-none focus:border-[var(--border-strong)] linear-focus-ring"
+                  />
+                </div>
+
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={!mcpName.trim() || !mcpUrl.trim()}
+                  onClick={() => {
+                    const nextSrv: McpServerConfig = {
+                      id: `mcp_${Date.now().toString(36)}`,
+                      name: mcpName.trim(),
+                      url: mcpUrl.trim(),
+                      transport: mcpTransport,
+                      ...(mcpToken.trim()
+                        ? { headers: { Authorization: `Bearer ${mcpToken.trim()}` } }
+                        : {}),
+                      enabled: true,
+                    };
+                    const prev = settings.mcpServers || [];
+                    void updateSettings({ mcpServers: [...prev, nextSrv] }).then(() => {
+                      setMcpName("");
+                      setMcpUrl("");
+                      setMcpToken("");
+                      pushToast(`已添加 MCP 服务器「${nextSrv.name}」`, "success");
+                    });
+                  }}
+                  className="text-[11px]"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>添加 Remote MCP</span>
+                </Button>
+
+                {(settings.mcpServers || []).length > 0 && (
+                  <div className="rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] divide-y divide-[var(--border-hairline)]">
+                    {(settings.mcpServers || []).map((srv) => (
+                      <div
+                        key={srv.id}
+                        className="px-3 py-2 flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-linear-medium text-[var(--text-primary)] truncate">
+                              {srv.name}
+                            </span>
+                            <span className="font-mono text-[10px] px-1 rounded bg-[var(--surface-subtle)] text-[var(--text-muted)]">
+                              {srv.transport}
+                            </span>
+                          </div>
+                          <div className="font-mono text-[10.5px] text-[var(--text-muted)] truncate">
+                            {srv.url}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            disabled={testingMcpId === srv.id}
+                            onClick={async () => {
+                              setTestingMcpId(srv.id);
+                              try {
+                                const tools = await listMcpServerTools(
+                                  srv,
+                                  getPlatformAdapter().getFetch(),
+                                  true
+                                );
+                                pushToast(
+                                  `MCP「${srv.name}」连接正常，发现 ${tools.length} 个工具`,
+                                  "success"
+                                );
+                              } catch (err) {
+                                pushToast(
+                                  `MCP 测试失败：${err instanceof Error ? err.message : String(err)}`,
+                                  "error"
+                                );
+                              } finally {
+                                setTestingMcpId(null);
+                              }
+                            }}
+                            className="text-[11px]"
+                          >
+                            {testingMcpId === srv.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <RefreshCw className="w-3 h-3" />
+                            )}
+                            <span>测试</span>
+                          </Button>
+                          <input
+                            type="checkbox"
+                            checked={srv.enabled}
+                            onChange={(e) => {
+                              const nextList = (settings.mcpServers || []).map((item) =>
+                                item.id === srv.id
+                                  ? { ...item, enabled: e.target.checked }
+                                  : item
+                              );
+                              void updateSettings({ mcpServers: nextList });
+                            }}
+                            aria-label={`启用 MCP ${srv.name}`}
+                            className="w-4 h-4 accent-[var(--accent)] cursor-pointer"
+                          />
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => {
+                              const nextList = (settings.mcpServers || []).filter(
+                                (item) => item.id !== srv.id
+                              );
+                              void updateSettings({ mcpServers: nextList });
+                            }}
+                            aria-label={`删除 MCP ${srv.name}`}
+                            className="hover:text-[var(--status-danger)]"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
+
           {/* Tab 3: 外观与快捷键 */}
           {tab === "appearance" && (
             <div className="space-y-4">
@@ -1064,6 +1391,94 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
           {/* Tab 4: 办公技能 */}
           {tab === "skills" && (
             <div className="space-y-5">
+              {/* 标准 Pi SKILL.md 导入器 */}
+              <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-linear-semibold text-[var(--text-primary)]">
+                      导入标准 SKILL.md（兼容 Pi / 社区技能）
+                    </div>
+                    <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                      支持带 YAML Frontmatter 的 `.md` 文件或直链 URL，导入后可直接在 `/` 菜单呼出。
+                    </p>
+                  </div>
+                  <div>
+                    <input
+                      ref={skillMdInputRef}
+                      type="file"
+                      accept=".md,.markdown"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          const raw = await file.text();
+                          const skill = await importSkillMarkdown(raw, file.name);
+                          pushToast(`已导入 SKILL.md：「${skill.name}」`, "success");
+                        } catch (err) {
+                          pushToast(
+                            `导入 SKILL.md 失败：${err instanceof Error ? err.message : String(err)}`,
+                            "error"
+                          );
+                        } finally {
+                          e.target.value = "";
+                        }
+                      }}
+                      className="hidden"
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => skillMdInputRef.current?.click()}
+                      className="text-[11px]"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>选择 .md 文件</span>
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    value={skillUrlInput}
+                    onChange={(e) => setSkillUrlInput(e.target.value)}
+                    placeholder="粘贴 SKILL.md 原始链接（如 https://raw.githubusercontent.com/.../SKILL.md）"
+                    className="flex-1 min-w-0 h-8 px-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[11.5px] font-mono outline-none focus:border-[var(--border-strong)] linear-focus-ring"
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={importingSkillUrl || !skillUrlInput.trim()}
+                    onClick={async () => {
+                      const rawUrl = skillUrlInput.trim();
+                      if (!rawUrl) return;
+                      setImportingSkillUrl(true);
+                      try {
+                        const res = await getPlatformAdapter().getFetch()(rawUrl);
+                        if (!res.ok) {
+                          throw new Error(`HTTP ${res.status}`);
+                        }
+                        const text = await res.text();
+                        const nameFromUrl = rawUrl.split("/").pop() || "SKILL.md";
+                        const skill = await importSkillMarkdown(text, nameFromUrl);
+                        setSkillUrlInput("");
+                        pushToast(`已从链接导入技能：「${skill.name}」`, "success");
+                      } catch (err) {
+                        pushToast(
+                          `URL 导入失败：${err instanceof Error ? err.message : String(err)}`,
+                          "error"
+                        );
+                      } finally {
+                        setImportingSkillUrl(false);
+                      }
+                    }}
+                    className="text-[11px] shrink-0"
+                  >
+                    {importingSkillUrl && <Loader2 className="w-3 h-3 animate-spin" />}
+                    <span>URL 导入</span>
+                  </Button>
+                </div>
+              </div>
+
               <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-2.5">
                 <div className="font-linear-semibold text-[var(--text-primary)]">
                   新建自定义办公技能
@@ -1323,6 +1738,78 @@ export function SettingsContent({ onClose }: { onClose?: () => void }) {
                     >
                       取消
                     </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* 版本与免费 GitHub Releases 自动更新检查 */}
+              <div className="p-3.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-linear-semibold text-[var(--text-primary)]">
+                      版本信息与更新检查
+                    </div>
+                    <div className="text-[11px] font-mono text-[var(--text-muted)] mt-0.5">
+                      当前客户端版本：v{APP_VERSION}
+                    </div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={checkingUpdate}
+                    onClick={async () => {
+                      setCheckingUpdate(true);
+                      try {
+                        const res = await checkLatestRelease(getPlatformAdapter().getFetch());
+                        setUpdateInfo(res);
+                        pushToast(res.message, res.hasUpdate ? "info" : "success");
+                      } catch (err) {
+                        pushToast(
+                          err instanceof Error ? err.message : String(err),
+                          "error"
+                        );
+                      } finally {
+                        setCheckingUpdate(false);
+                      }
+                    }}
+                    className="text-[11px]"
+                  >
+                    {checkingUpdate ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3 h-3" />
+                    )}
+                    <span>检查最新版本</span>
+                  </Button>
+                </div>
+
+                {updateInfo && (
+                  <div className="p-2.5 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[11px] space-y-1.5">
+                    <div className="font-linear-medium text-[var(--text-primary)]">
+                      {updateInfo.message}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {updateInfo.downloadUrl && (
+                        <a
+                          href={updateInfo.downloadUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline"
+                        >
+                          <Download className="w-3 h-3" />
+                          <span>下载适配当前系统的安装包</span>
+                        </a>
+                      )}
+                      <a
+                        href={updateInfo.releaseUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-[var(--text-secondary)] hover:underline"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>查看 GitHub Releases</span>
+                      </a>
+                    </div>
                   </div>
                 )}
               </div>

@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 import * as XLSX from "xlsx";
+import { recalculateWorkbookFormulas } from "./excel-formula";
 
 const Excel = (ExcelJS as unknown as { default?: typeof ExcelJS }).default ?? ExcelJS;
 
@@ -72,6 +73,9 @@ export interface UpdateExcelSpec {
   }>;
   addSheets?: ExcelSheetSpec[];
   renameSheet?: { from: string; to: string };
+  deleteRows?: Array<{ sheetName?: string; startRow: number; count?: number }>;
+  deleteColumns?: Array<{ sheetName?: string; startCol: number; count?: number }>;
+  mergeCells?: Array<{ sheetName?: string; range: string }>;
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -170,6 +174,12 @@ function getWorksheetGrid(ws: ExcelJS.Worksheet): ParsedCell[][] {
     for (let c = 1; c <= colCount; c++) {
       const cell = row.getCell(c);
       const parsed = normalizeExcelJsCellValue(cell.value);
+      if (parsed.formula && parsed.value === null && cell.result !== undefined) {
+        const r = cell.result;
+        if (typeof r === "string" || typeof r === "number" || typeof r === "boolean") {
+          parsed.value = r;
+        }
+      }
       if (cell.numFmt) parsed.numFmt = cell.numFmt;
       rowCells.push(parsed);
     }
@@ -355,6 +365,7 @@ export async function createExcelWorkbook(spec: CreateExcelSpec): Promise<Uint8A
   for (const sheet of spec.sheets) {
     applySheetSpec(wb, sheet);
   }
+  recalculateWorkbookFormulas(wb);
   const buffer = await wb.xlsx.writeBuffer();
   return new Uint8Array(buffer);
 }
@@ -422,6 +433,37 @@ export async function updateExcelCells(
     }
   }
 
+  if (spec.deleteRows?.length) {
+    for (const del of spec.deleteRows) {
+      const ws = del.sheetName
+        ? workbook.getWorksheet(del.sheetName)
+        : workbook.worksheets[0];
+      if (!ws) throw new Error(`未找到工作表: ${del.sheetName}`);
+      ws.spliceRows(Math.max(1, del.startRow), Math.max(1, del.count ?? 1));
+    }
+  }
+
+  if (spec.deleteColumns?.length) {
+    for (const del of spec.deleteColumns) {
+      const ws = del.sheetName
+        ? workbook.getWorksheet(del.sheetName)
+        : workbook.worksheets[0];
+      if (!ws) throw new Error(`未找到工作表: ${del.sheetName}`);
+      ws.spliceColumns(Math.max(1, del.startCol), Math.max(1, del.count ?? 1));
+    }
+  }
+
+  if (spec.mergeCells?.length) {
+    for (const m of spec.mergeCells) {
+      const ws = m.sheetName
+        ? workbook.getWorksheet(m.sheetName)
+        : workbook.worksheets[0];
+      if (!ws) throw new Error(`未找到工作表: ${m.sheetName}`);
+      ws.mergeCells(m.range);
+    }
+  }
+
+  recalculateWorkbookFormulas(workbook);
   const out = await workbook.xlsx.writeBuffer();
   return new Uint8Array(out);
 }

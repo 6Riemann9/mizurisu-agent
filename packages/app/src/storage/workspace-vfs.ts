@@ -17,6 +17,9 @@ import {
   kvSet,
 } from "./db";
 
+const WORKSPACE_PREFIX = "__ws__/";
+const MAX_DISK_SNAPSHOT_BYTES = 15 * 1024 * 1024;
+
 export function normalizeVfsPath(rawPath: string): string {
   const clean = rawPath.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+/g, "/").trim();
   if (!clean || clean === "." || clean.includes("..")) {
@@ -35,19 +38,61 @@ type VfsListener = (event: VfsEvent) => void;
 
 export class WorkspaceVFS {
   private listeners = new Set<VfsListener>();
+  private activeWorkspaceId = "default";
   private mountedNativeDir: string | undefined;
+  private directNativeMode = false;
+
+  getActiveWorkspaceId(): string {
+    return this.activeWorkspaceId;
+  }
+
+  isDirectNativeMode(): boolean {
+    return Boolean(this.directNativeMode && this.mountedNativeDir);
+  }
+
+  setActiveWorkspace(workspaceId: string, nativeDir?: string): void {
+    this.activeWorkspaceId = workspaceId.trim() || "default";
+    this.setMountedNativeDir(nativeDir);
+  }
 
   setMountedNativeDir(dir?: string): void {
-    this.mountedNativeDir = dir;
+    const clean = dir?.trim() || undefined;
+    this.mountedNativeDir = clean;
+    const platform = getPlatformAdapter();
+    this.directNativeMode = Boolean(
+      clean && platform.listNativeDirectoryFiles && platform.readFromNativeDirectory
+    );
   }
 
   getMountedNativeDir(): string | undefined {
     return this.mountedNativeDir;
   }
 
+  /** 将工作区逻辑路径映射为底层 IndexedDB 存储键（默认工作区保持无前缀向后兼容） */
+  private toDbKey(cleanPath: string): string {
+    if (this.activeWorkspaceId === "default") {
+      return cleanPath;
+    }
+    return `${WORKSPACE_PREFIX}${this.activeWorkspaceId}/${cleanPath}`;
+  }
+
+  private fromDbKey(dbKey: string): string | null {
+    if (this.activeWorkspaceId === "default") {
+      if (dbKey.startsWith(WORKSPACE_PREFIX)) return null;
+      return dbKey;
+    }
+    const prefix = `${WORKSPACE_PREFIX}${this.activeWorkspaceId}/`;
+    if (!dbKey.startsWith(prefix)) return null;
+    return dbKey.slice(prefix.length);
+  }
+
   subscribe(listener: VfsListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  emitSync(): void {
+    this.emit({ type: "sync" });
   }
 
   private emit(event: VfsEvent): void {
@@ -57,22 +102,60 @@ export class WorkspaceVFS {
   }
 
   async listFiles(): Promise<WorkspaceFileMeta[]> {
+    if (this.isDirectNativeMode()) {
+      const platform = getPlatformAdapter();
+      const raw = await platform.listNativeDirectoryFiles!(this.mountedNativeDir!);
+      return raw.map((item) => ({
+        path: item.path,
+        name: item.name,
+        mimeType: inferMimeType(item.path),
+        size: item.size,
+        updatedAt: item.updatedAt,
+        category: detectFileCategory(item.path),
+      }));
+    }
+
     const records = await dbListFiles();
-    return records.map(({ data: _data, ...meta }) => meta);
+    const out: WorkspaceFileMeta[] = [];
+    for (const rec of records) {
+      const logicalPath = this.fromDbKey(rec.path);
+      if (!logicalPath) continue;
+      const { data: _data, ...meta } = rec;
+      out.push({ ...meta, path: logicalPath });
+    }
+    return out;
   }
 
   async exists(rawPath: string): Promise<boolean> {
     const path = normalizeVfsPath(rawPath);
-    return Boolean(await dbGetFile(path));
+    if (this.isDirectNativeMode()) {
+      const files = await this.listFiles();
+      return files.some((f) => f.path === path);
+    }
+    return Boolean(await dbGetFile(this.toDbKey(path)));
   }
 
   async readRecord(rawPath: string): Promise<WorkspaceFileRecord> {
     const path = normalizeVfsPath(rawPath);
-    const rec = await dbGetFile(path);
+    if (this.isDirectNativeMode()) {
+      const platform = getPlatformAdapter();
+      const bytes = await platform.readFromNativeDirectory!(this.mountedNativeDir!, path);
+      return {
+        path,
+        name: path.split("/").pop() || path,
+        mimeType: inferMimeType(path),
+        size: bytes.byteLength,
+        updatedAt: Date.now(),
+        category: detectFileCategory(path),
+        data: bytes,
+      };
+    }
+
+    const rec = await dbGetFile(this.toDbKey(path));
     if (!rec) {
       throw new Error(`工作区文件不存在: ${path}`);
     }
-    return rec;
+    return { ...rec, path };
   }
 
   async readBytes(rawPath: string): Promise<Uint8Array> {
@@ -91,11 +174,45 @@ export class WorkspaceVFS {
     options?: { snapshotNote?: string; skipNativeSync?: boolean }
   ): Promise<WorkspaceFileMeta> {
     const path = normalizeVfsPath(rawPath);
-    const existing = await dbGetFile(path);
+    const dbKey = this.toDbKey(path);
+    const copy = new Uint8Array(data);
+    const now = Date.now();
+
+    if (this.isDirectNativeMode()) {
+      const platform = getPlatformAdapter();
+      // 真本地模式下，写入前先尝试对现有磁盘原件拍一次快照以支持一键回滚
+      try {
+        const prevBytes = await platform.readFromNativeDirectory!(this.mountedNativeDir!, path);
+        if (prevBytes.byteLength <= MAX_DISK_SNAPSHOT_BYTES) {
+          await dbAddSnapshot({
+            id: `${dbKey}::${now}::${Math.random().toString(36).slice(2, 7)}`,
+            path: dbKey,
+            size: prevBytes.byteLength,
+            createdAt: now,
+            note: options?.snapshotNote || "修改前自动快照",
+            data: prevBytes,
+          });
+        }
+      } catch {
+        // 新建文件尚无旧版，忽略
+      }
+      await platform.writeToNativeDirectory!(this.mountedNativeDir!, path, copy);
+      this.emit({ type: "write", path });
+      return {
+        path,
+        name: path.split("/").pop() || path,
+        mimeType: inferMimeType(path),
+        size: copy.byteLength,
+        updatedAt: now,
+        category: detectFileCategory(path),
+      };
+    }
+
+    const existing = await dbGetFile(dbKey);
     if (existing) {
       await dbAddSnapshot({
-        id: `${path}::${Date.now()}::${Math.random().toString(36).slice(2, 7)}`,
-        path,
+        id: `${dbKey}::${now}::${Math.random().toString(36).slice(2, 7)}`,
+        path: dbKey,
         size: existing.size,
         createdAt: existing.updatedAt,
         note: options?.snapshotNote || "修改前自动快照",
@@ -103,10 +220,8 @@ export class WorkspaceVFS {
       });
     }
 
-    const now = Date.now();
-    const copy = new Uint8Array(data);
     const record: WorkspaceFileRecord = {
-      path,
+      path: dbKey,
       name: path.split("/").pop() || path,
       mimeType: inferMimeType(path),
       size: copy.byteLength,
@@ -128,7 +243,7 @@ export class WorkspaceVFS {
 
     this.emit({ type: "write", path });
     const { data: _omit, ...meta } = record;
-    return meta;
+    return { ...meta, path };
   }
 
   async writeText(
@@ -142,19 +257,50 @@ export class WorkspaceVFS {
 
   async deleteFile(rawPath: string): Promise<void> {
     const path = normalizeVfsPath(rawPath);
-    const existing = await dbGetFile(path);
+    const dbKey = this.toDbKey(path);
+    const platform = getPlatformAdapter();
+
+    if (this.isDirectNativeMode()) {
+      try {
+        const prevBytes = await platform.readFromNativeDirectory!(this.mountedNativeDir!, path);
+        if (prevBytes.byteLength <= MAX_DISK_SNAPSHOT_BYTES) {
+          await dbAddSnapshot({
+            id: `${dbKey}::${Date.now()}::del`,
+            path: dbKey,
+            size: prevBytes.byteLength,
+            createdAt: Date.now(),
+            note: "删除前自动快照",
+            data: prevBytes,
+          });
+        }
+      } catch {
+        // 忽略读取失败
+      }
+      await platform.deleteFromNativeDirectory!(this.mountedNativeDir!, path);
+      this.emit({ type: "delete", path });
+      return;
+    }
+
+    const existing = await dbGetFile(dbKey);
     if (!existing) {
       throw new Error(`工作区文件不存在: ${path}`);
     }
     await dbAddSnapshot({
-      id: `${path}::${Date.now()}::del`,
-      path,
+      id: `${dbKey}::${Date.now()}::del`,
+      path: dbKey,
       size: existing.size,
       createdAt: existing.updatedAt,
       note: "删除前自动快照",
       data: new Uint8Array(existing.data),
     });
-    await dbDeleteFile(path);
+    await dbDeleteFile(dbKey);
+
+    if (this.mountedNativeDir && platform.deleteFromNativeDirectory) {
+      await platform
+        .deleteFromNativeDirectory(this.mountedNativeDir, path)
+        .catch(() => undefined);
+    }
+
     this.emit({ type: "delete", path });
   }
 
@@ -167,20 +313,47 @@ export class WorkspaceVFS {
       throw new Error(`新旧文件路径相同: ${oldPath}`);
     }
 
-    const existing = await dbGetFile(oldPath);
+    const oldKey = this.toDbKey(oldPath);
+    const newKey = this.toDbKey(newPath);
+    const platform = getPlatformAdapter();
+
+    if (this.isDirectNativeMode()) {
+      const prevBytes = await platform.readFromNativeDirectory!(this.mountedNativeDir!, oldPath);
+      if (prevBytes.byteLength <= MAX_DISK_SNAPSHOT_BYTES) {
+        await dbAddSnapshot({
+          id: `${oldKey}::${Date.now()}::rename`,
+          path: oldKey,
+          size: prevBytes.byteLength,
+          createdAt: Date.now(),
+          note: `重命名为 ${newPath} 前自动快照`,
+          data: prevBytes,
+        });
+      }
+      await platform.renameInNativeDirectory!(this.mountedNativeDir!, oldPath, newPath);
+      this.emit({ type: "rename", path: newPath, previousPath: oldPath });
+      return {
+        path: newPath,
+        name: newPath.split("/").pop() || newPath,
+        mimeType: inferMimeType(newPath),
+        size: prevBytes.byteLength,
+        updatedAt: Date.now(),
+        category: detectFileCategory(newPath),
+      };
+    }
+
+    const existing = await dbGetFile(oldKey);
     if (!existing) {
       throw new Error(`工作区文件不存在: ${oldPath}`);
     }
 
-    const targetExisting = await dbGetFile(newPath);
+    const targetExisting = await dbGetFile(newKey);
     if (targetExisting) {
       throw new Error(`目标文件已存在: ${newPath}`);
     }
 
-    // 为原路径留存快照以便后续回滚或追踪
     await dbAddSnapshot({
-      id: `${oldPath}::${Date.now()}::rename`,
-      path: oldPath,
+      id: `${oldKey}::${Date.now()}::rename`,
+      path: oldKey,
       size: existing.size,
       createdAt: existing.updatedAt,
       note: `重命名为 ${newPath} 前自动快照`,
@@ -190,7 +363,7 @@ export class WorkspaceVFS {
     const now = Date.now();
     const copy = new Uint8Array(existing.data);
     const newRecord: WorkspaceFileRecord = {
-      path: newPath,
+      path: newKey,
       name: newPath.split("/").pop() || newPath,
       mimeType: inferMimeType(newPath),
       size: copy.byteLength,
@@ -200,27 +373,29 @@ export class WorkspaceVFS {
     };
 
     await dbPutFile(newRecord);
-    await dbDeleteFile(oldPath);
+    await dbDeleteFile(oldKey);
 
     if (this.mountedNativeDir) {
-      const platform = getPlatformAdapter();
-      if (platform.writeToNativeDirectory) {
+      if (platform.renameInNativeDirectory) {
+        await platform
+          .renameInNativeDirectory(this.mountedNativeDir, oldPath, newPath)
+          .catch(() => undefined);
+      } else if (platform.writeToNativeDirectory) {
         await platform
           .writeToNativeDirectory(this.mountedNativeDir, newPath, copy)
           .catch(() => undefined);
       }
     }
 
-    // 仅发射单次原子 rename 事件，避免预览区因中间 delete 事件产生闪烁或异步竞态
     this.emit({ type: "rename", path: newPath, previousPath: oldPath });
 
     const { data: _omit, ...meta } = newRecord;
-    return meta;
+    return { ...meta, path: newPath };
   }
 
   async getSnapshots(rawPath: string): Promise<FileSnapshot[]> {
     const path = normalizeVfsPath(rawPath);
-    return await dbGetSnapshots(path);
+    return await dbGetSnapshots(this.toDbKey(path));
   }
 
   async restoreSnapshot(snapshotId: string, rawPath: string): Promise<WorkspaceFileMeta> {
@@ -250,7 +425,22 @@ export class WorkspaceVFS {
     return results;
   }
 
+  /** 清空非默认工作区的 IndexedDB 隔离文件（切换或删除工作区时调用） */
+  async purgeWorkspaceFiles(workspaceId: string): Promise<void> {
+    if (!workspaceId || workspaceId === "default") return;
+    const prefix = `${WORKSPACE_PREFIX}${workspaceId}/`;
+    const all = await dbListFiles();
+    for (const rec of all) {
+      if (rec.path.startsWith(prefix)) {
+        await dbDeleteFile(rec.path);
+      }
+    }
+  }
+
   async seedStarterWorkspaceIfEmpty(): Promise<void> {
+    if (this.activeWorkspaceId !== "default" || this.isDirectNativeMode()) {
+      return;
+    }
     const seeded = await kvGet<boolean>("starter_workspace_seeded");
     const existing = await this.listFiles();
 
@@ -266,7 +456,14 @@ export class WorkspaceVFS {
                 ["华南区", "API 中转网关", 210, 268, { formula: "C3+D3", result: 478 }, 0.31],
                 ["华北区", "私有化部署", 180, 195, { formula: "C4+D4", result: 375 }, 0.12],
                 ["西南区", "企业版 SaaS", 125, 162, { formula: "C5+D5", result: 287 }, 0.29],
-                ["合计", "-", { formula: "SUM(C2:C5)", result: 835 }, { formula: "SUM(D2:D5)", result: 1010 }, { formula: "SUM(E2:E5)", result: 1845 }, { formula: "AVERAGE(F2:F5)", result: 0.24 }],
+                [
+                  "合计",
+                  "-",
+                  { formula: "SUM(C2:C5)", result: 835 },
+                  { formula: "SUM(D2:D5)", result: 1010 },
+                  { formula: "SUM(E2:E5)", result: 1845 },
+                  { formula: "AVERAGE(F2:F5)", result: 0.24 },
+                ],
               ],
               numberFormats: { 2: "#,##0", 3: "#,##0", 4: "#,##0", 5: "0.0%" },
             },
@@ -304,7 +501,6 @@ export class WorkspaceVFS {
       }
     }
 
-    // 已有旧工作区但尚未存在示范幻灯片且未曾单独补种过时，自动补种一次
     try {
       const slidesSeeded = await kvGet<boolean>("starter_slides_seeded");
       const hasStarterSlides = existing.some(

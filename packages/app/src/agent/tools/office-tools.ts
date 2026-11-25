@@ -78,6 +78,32 @@ const excelUpdateParams = obj({
       })
     )
   ),
+  deleteRows: opt(
+    arr(
+      obj({
+        sheetName: opt(str({ description: "目标 Sheet 名称" })),
+        startRow: int({ description: "起始行号（从 1 开始）", minimum: 1 }),
+        count: opt(int({ description: "删除行数，默认 1", minimum: 1 })),
+      })
+    )
+  ),
+  deleteColumns: opt(
+    arr(
+      obj({
+        sheetName: opt(str({ description: "目标 Sheet 名称" })),
+        startCol: int({ description: "起始列号（从 1 开始）", minimum: 1 }),
+        count: opt(int({ description: "删除列数，默认 1", minimum: 1 })),
+      })
+    )
+  ),
+  mergeCells: opt(
+    arr(
+      obj({
+        sheetName: opt(str({ description: "目标 Sheet 名称" })),
+        range: str({ description: "合并区域，如 A1:D1" }),
+      })
+    )
+  ),
 });
 
 const wordReadParams = obj({
@@ -367,6 +393,9 @@ export function createOfficeTools(vfs: WorkspaceVFS): AgentTool[] {
             sheetName: batch.sheetName,
             rows: batch.rows.map((r) => r.map(toCellInput)),
           })),
+          deleteRows: params.deleteRows,
+          deleteColumns: params.deleteColumns,
+          mergeCells: params.mergeCells,
         },
         params.path
       );
@@ -698,9 +727,21 @@ export function createOfficeTools(vfs: WorkspaceVFS): AgentTool[] {
         startPage: params.startPage,
         endPage: params.endPage,
       });
+      const suspectedScannedPages = res.pages
+        .filter((p) => p.text.trim().length < 15)
+        .map((p) => p.pageNumber);
+      const payload = {
+        ...res,
+        ...(suspectedScannedPages.length > 0
+          ? {
+              suspectedScannedPages,
+              hint: `检测到第 ${suspectedScannedPages.join("、")} 页疑似扫描件或纯图页（文本极少），可调用 vision_ocr 对指定页码做辅助视觉/OCR识别。`,
+            }
+          : {}),
+      };
       return {
-        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
-        details: { path: params.path, pageCount: res.pageCount },
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        details: { path: params.path, pageCount: res.pageCount, suspectedScannedPages },
       };
     },
   };

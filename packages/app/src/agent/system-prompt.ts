@@ -9,6 +9,7 @@ export function buildSystemPrompt(options: {
   files: WorkspaceFileMeta[];
   activeSkill?: SkillTemplate;
   customSystemPrompt?: string;
+  extensionHints?: string[];
 }): string {
   const fileList =
     options.files.length === 0
@@ -24,6 +25,11 @@ export function buildSystemPrompt(options: {
   const customPreferenceSection = options.customSystemPrompt?.trim()
     ? `\n## 客户自定义办公偏好\n${options.customSystemPrompt.trim()}\n`
     : "";
+
+  const extensionSection =
+    options.extensionHints && options.extensionHints.length > 0
+      ? `\n## 已启用的扩展能力指引\n${options.extensionHints.join("\n")}\n`
+      : "";
 
   const desktopHint =
     options.platformKind === "desktop"
@@ -52,7 +58,7 @@ export function buildSystemPrompt(options: {
 ${desktopHint}
 5. **交付反馈**：生成或更新文件后，明确告知用户文件路径与关键改动摘要；系统会自动在预览面板打开最新修改的文档。
 6. **语言**：默认使用清晰简洁的简体中文回复（除非用户要求其他语言）。
-${skillSection}${customPreferenceSection}
+${skillSection}${customPreferenceSection}${extensionSection}
 ## 当前工作区文件清单
 ${fileList}
 `;

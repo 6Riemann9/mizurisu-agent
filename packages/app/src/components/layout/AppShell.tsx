@@ -6,6 +6,7 @@ import { useAppStore } from "../../store/useAppStore";
 import { LoginView } from "../auth/LoginView";
 import { ApprovalDialog } from "../chat/ApprovalDialog";
 import { ChatPane } from "../chat/ChatPane";
+import { QuestionnaireDialog } from "../chat/QuestionnaireDialog";
 import { CommandPalette } from "../command/CommandPalette";
 import { ShortcutHelpModal } from "../command/ShortcutHelpModal";
 import { PreviewPane } from "../preview/PreviewPane";
@@ -58,6 +59,7 @@ export function AppShell() {
     commandPaletteOpen,
     shortcutHelpOpen,
     pendingApproval,
+    pendingQuestionnaire,
     mobileTab,
     setMobileTab,
     statusBanner,
@@ -96,7 +98,8 @@ export function AppShell() {
       settingsOpen ||
       commandPaletteOpen ||
       shortcutHelpOpen ||
-      Boolean(pendingApproval),
+      Boolean(pendingApproval) ||
+      Boolean(pendingQuestionnaire),
     onToggleSidebar: handleToggleSidebar,
     onTogglePreview: () => {
       if (!previewOpen && !activePreviewPath && files.length > 0) {
@@ -375,6 +378,7 @@ export function AppShell() {
 
       <SettingsModal />
       <ApprovalDialog />
+      <QuestionnaireDialog />
       <CommandPalette />
       <ShortcutHelpModal />
     </div>

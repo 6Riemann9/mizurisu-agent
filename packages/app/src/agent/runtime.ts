@@ -15,13 +15,18 @@ import type { WorkspaceVFS } from "../storage/workspace-vfs";
 import type {
   AppSettings,
   ApprovalRequest,
+  HandoffPayload,
   MessageUsage,
   ModelInfo,
   NewApiConfig,
+  QuestionnaireRequest,
   SkillTemplate,
+  TodoItem,
+  TokenBurdenReport,
   ToolCallRecord,
   UiMessage,
 } from "../types";
+import { createDefaultExtensionHost, estimateTokenBurden, type ExtensionRuntimeContext } from "./extensions";
 import { buildSystemPrompt } from "./system-prompt";
 import { buildAgentTools } from "./tools";
 
@@ -31,6 +36,12 @@ export interface RunnerCallbacks {
   onRequestApproval: (req: ApprovalRequest) => void;
   /** 当运行被取消或中断时通知 UI 主动关闭对应审批弹窗 */
   onCancelApproval?: (approvalId: string) => void;
+  onUpdateTodos?: (sessionId: string, todos: TodoItem[]) => void;
+  onRequestQuestionnaire?: (req: QuestionnaireRequest) => void;
+  onCancelQuestionnaire?: (id: string) => void;
+  onHandoffSession?: (payload: HandoffPayload) => void | Promise<void>;
+  onTokenBurdenUpdate?: (report: TokenBurdenReport) => void;
+  onSubagentUsage?: (sessionId: string, usage: MessageUsage) => void;
   onRunFinished: (sessionId: string) => void;
 }
 
@@ -340,6 +351,7 @@ export class PiAgentRunner {
     settings: AppSettings;
     activeSkill?: SkillTemplate;
     images?: ImageContent[];
+    initialTodos?: TodoItem[];
   }): Promise<void> {
     // 在任何异步等待前先抢占运行序号并中止旧运行，防止并发启动时状态串写
     const runSeq = ++this.runSeq;
@@ -358,16 +370,57 @@ export class PiAgentRunner {
       inferModelMetadata(options.config.selectedModelId || "gpt-4o", options.config);
     const piModel = toPiModel(modelInfo, options.config);
 
+    const baseTools = buildAgentTools(this.vfs);
+    const streamFn = this.customStreamFn ?? createNewApiStreamFn(() => platform.getFetch());
+    const extensionHost = createDefaultExtensionHost();
+
+    const extCtx: ExtensionRuntimeContext = {
+      sessionId: options.sessionId,
+      vfs: this.vfs,
+      config: options.config,
+      settings: options.settings,
+      model: piModel,
+      modelInfo,
+      models: options.models,
+      streamFn,
+      platform,
+      subagentDepth: 0,
+      todos: [...(options.initialTodos || [])],
+      updateTodos: (nextTodos) => {
+        if (this.activeRunSeq !== runSeq) return;
+        this.callbacks.onUpdateTodos?.(options.sessionId, nextTodos);
+      },
+      requestQuestionnaire: (req) => {
+        this.callbacks.onRequestQuestionnaire?.(req);
+      },
+      cancelQuestionnaire: (id) => {
+        this.callbacks.onCancelQuestionnaire?.(id);
+      },
+      requestApproval: (req) => {
+        this.callbacks.onRequestApproval(req);
+      },
+      cancelApproval: (id) => {
+        this.callbacks.onCancelApproval?.(id);
+      },
+      onHandoff: async (payload) => {
+        await this.callbacks.onHandoffSession?.(payload);
+      },
+      onSubagentUsage: (usage) => {
+        this.callbacks.onSubagentUsage?.(options.sessionId, usage);
+      },
+    };
+
+    const compiledExt = extensionHost.compile(extCtx);
+    const tools = [...baseTools, ...compiledExt.tools];
+
     const systemPrompt = buildSystemPrompt({
       brandName: options.config.brandName,
       platformKind: platform.kind,
       files,
       activeSkill: options.activeSkill,
       customSystemPrompt: options.settings.customSystemPrompt,
+      extensionHints: compiledExt.promptSnippets,
     });
-
-    const tools = buildAgentTools(this.vfs);
-    const streamFn = this.customStreamFn ?? createNewApiStreamFn(() => platform.getFetch());
 
     const assistantMsgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const toolMap = new Map<string, ToolCallRecord>();
@@ -448,6 +501,31 @@ export class PiAgentRunner {
       piModel.contextWindow
     );
 
+    const reportBurden = () => {
+      if (this.activeRunSeq !== runSeq) return;
+      if (options.settings.enabledPlugins?.["pi-token-burden"] === false) return;
+      this.callbacks.onTokenBurdenUpdate?.(
+        estimateTokenBurden({
+          systemPrompt,
+          tools,
+          historyMessages: [
+            ...historyMessages,
+            {
+              role: "user",
+              content: options.userMessage.content,
+              timestamp: options.userMessage.createdAt,
+            },
+          ],
+          uiMessages: [...options.historyBeforeUser, options.userMessage, currentAssistant],
+          contextWindow: piModel.contextWindow,
+          modelId: piModel.id,
+          perPluginToolTokens: compiledExt.perPluginToolTokens,
+        })
+      );
+    };
+
+    reportBurden();
+
     this.agent = new Agent({
       initialState: {
         systemPrompt,
@@ -458,9 +536,39 @@ export class PiAgentRunner {
       },
       streamFn,
       getApiKey: () => options.config.apiKey.trim(),
-      beforeToolCall: async ({ toolCall, args }, signal) => {
+      transformContext: async (messages, signal) => {
+        if (compiledExt.transformHooks.length === 0) return messages;
+        return await extensionHost.runTransformContext(
+          compiledExt.transformHooks,
+          messages,
+          extCtx,
+          signal
+        );
+      },
+      afterToolCall: async (context, signal) => {
+        if (compiledExt.afterHooks.length === 0) return undefined;
+        return await extensionHost.runAfterToolCall(
+          compiledExt.afterHooks,
+          context,
+          extCtx,
+          signal
+        );
+      },
+      beforeToolCall: async (context, signal) => {
+        const { toolCall, args } = context;
         if (signal?.aborted) {
           return { block: true, reason: "用户已终止执行" };
+        }
+        if (compiledExt.beforeHooks.length > 0) {
+          const hookRes = await extensionHost.runBeforeToolCall(
+            compiledExt.beforeHooks,
+            context,
+            extCtx,
+            signal
+          );
+          if (hookRes?.block) {
+            return hookRes;
+          }
         }
         const needConfirm =
           toolCall.name === "run_shell_command" ||
@@ -565,6 +673,7 @@ export class PiAgentRunner {
           currentAssistant.errorMessage = am.errorMessage;
         }
         emitUpdate();
+        reportBurden();
       } else if (event.type === "tool_execution_start") {
         toolMap.set(event.toolCallId, {
           id: event.toolCallId,
@@ -578,7 +687,12 @@ export class PiAgentRunner {
         const resObj = event.result as
           | {
               content?: Array<{ type: string; text?: string }>;
-              details?: { modifiedPath?: string };
+              details?: {
+                modifiedPath?: string;
+                changeSummary?: string;
+                rollbackSnapshotId?: string;
+                rollbackPath?: string;
+              };
             }
           | undefined;
         const resultText = resObj?.content
@@ -597,6 +711,9 @@ export class PiAgentRunner {
           resultText,
           durationMs: event.durationMs,
           modifiedPath,
+          changeSummary: resObj?.details?.changeSummary,
+          rollbackSnapshotId: resObj?.details?.rollbackSnapshotId,
+          rollbackPath: resObj?.details?.rollbackPath || modifiedPath,
         });
         emitUpdate();
       }

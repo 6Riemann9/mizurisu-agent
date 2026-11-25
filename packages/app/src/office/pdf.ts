@@ -1171,3 +1171,200 @@ export async function mergePdfDocuments(filesBytes: Uint8Array[]): Promise<Uint8
   const out = await merged.save();
   return new Uint8Array(out);
 }
+
+/** 解析页码范围表达式（如 "1-3,5"）为从 1 开始的去重页码列表 */
+export function parsePdfPageRanges(rangeSpec: string, totalPages: number): number[] {
+  const clean = rangeSpec.trim();
+  if (!clean) {
+    throw new Error("请指定需要提取的页码范围，例如 1-3 或 1,3,5");
+  }
+  const result: number[] = [];
+  const seen = new Set<number>();
+  for (const part of clean.split(",")) {
+    const seg = part.trim();
+    if (!seg) continue;
+    const dash = seg.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (dash) {
+      const start = Number(dash[1]);
+      const end = Number(dash[2]);
+      if (start < 1 || end < start || end > totalPages) {
+        throw new Error(`页码范围「${seg}」超出总页数（1-${totalPages}）`);
+      }
+      for (let p = start; p <= end; p++) {
+        if (!seen.has(p)) {
+          seen.add(p);
+          result.push(p);
+        }
+      }
+    } else if (/^\d+$/.test(seg)) {
+      const p = Number(seg);
+      if (p < 1 || p > totalPages) {
+        throw new Error(`页码「${p}」超出总页数（1-${totalPages}）`);
+      }
+      if (!seen.has(p)) {
+        seen.add(p);
+        result.push(p);
+      }
+    } else {
+      throw new Error(`无法解析页码片段「${seg}」`);
+    }
+  }
+  if (result.length === 0) {
+    throw new Error("未解析出任何有效页码");
+  }
+  return result;
+}
+
+export async function splitPdfDocument(
+  bytes: Uint8Array,
+  pageRanges: string
+): Promise<{ bytes: Uint8Array; extractedPages: number[]; sourcePageCount: number }> {
+  const src = await PDFDocument.load(bytes);
+  const total = src.getPageCount();
+  const pages = parsePdfPageRanges(pageRanges, total);
+  const outDoc = await PDFDocument.create();
+  const copied = await outDoc.copyPages(
+    src,
+    pages.map((p) => p - 1)
+  );
+  for (const page of copied) {
+    outDoc.addPage(page);
+  }
+  const out = await outDoc.save();
+  return {
+    bytes: new Uint8Array(out),
+    extractedPages: pages,
+    sourcePageCount: total,
+  };
+}
+
+function renderWatermarkStampPng(
+  text: string,
+  fontSize: number,
+  opacity: number
+): Uint8Array | null {
+  if (!canUseCanvasRendering()) return null;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const fontSpec = `600 ${Math.max(16, fontSize)}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+  ctx.font = fontSpec;
+  const measured = Math.max(160, Math.ceil(ctx.measureText(text).width) + 48);
+  const height = Math.max(80, Math.ceil(fontSize * 1.8) + 24);
+  canvas.width = measured * 2;
+  canvas.height = height * 2;
+  ctx.scale(2, 2);
+  ctx.clearRect(0, 0, measured, height);
+  ctx.font = fontSpec;
+  ctx.fillStyle = `rgba(100, 116, 139, ${Math.min(0.85, Math.max(0.05, opacity))})`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, measured / 2, height / 2);
+
+  const dataUrl = canvas.toDataURL("image/png");
+  const base64 = dataUrl.split(",")[1] || "";
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  return bytes;
+}
+
+export async function watermarkPdfDocument(
+  bytes: Uint8Array,
+  options: {
+    text: string;
+    opacity?: number;
+    fontSize?: number;
+    angle?: number;
+  }
+): Promise<{ bytes: Uint8Array; pageCount: number }> {
+  const cleanText = options.text.trim();
+  if (!cleanText) {
+    throw new Error("水印文字不能为空");
+  }
+  const opacity = options.opacity ?? 0.22;
+  const fontSize = options.fontSize ?? 36;
+  const angleDeg = options.angle ?? 32;
+
+  const pdfDoc = await PDFDocument.load(bytes);
+  const pages = pdfDoc.getPages();
+  const stampPng = hasNonAscii(cleanText)
+    ? renderWatermarkStampPng(cleanText, fontSize, opacity)
+    : null;
+
+  const { degrees } = await import("pdf-lib");
+
+  if (stampPng) {
+    const img = await pdfDoc.embedPng(stampPng);
+    const drawW = img.width / 2;
+    const drawH = img.height / 2;
+    for (const p of pages) {
+      const { width, height } = p.getSize();
+      p.drawImage(img, {
+        x: width / 2 - drawW / 2,
+        y: height / 2 - drawH / 2,
+        width: drawW,
+        height: drawH,
+        rotate: degrees(angleDeg),
+      });
+    }
+  } else {
+    const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const printable = sanitizeWinAnsi(cleanText) || "CONFIDENTIAL";
+    const textW = font.widthOfTextAtSize(printable, fontSize);
+    for (const p of pages) {
+      const { width, height } = p.getSize();
+      p.drawText(printable, {
+        x: Math.max(24, width / 2 - textW / 2),
+        y: height / 2,
+        size: fontSize,
+        font,
+        color: rgb(0.45, 0.5, 0.58),
+        opacity: Math.min(0.85, Math.max(0.05, opacity)),
+        rotate: degrees(angleDeg),
+      });
+    }
+  }
+
+  const saved = await pdfDoc.save();
+  return { bytes: new Uint8Array(saved), pageCount: pages.length };
+}
+
+/** 将 PDF 指定页码（1-based）渲染为 PNG Data URL，供辅助视觉或系统 OCR 提取扫描件内容 */
+export async function renderPdfPagesToPngDataUrls(
+  bytes: Uint8Array,
+  pageNumbers: number[],
+  scale = 1.5
+): Promise<Array<{ pageNumber: number; dataUrl: string }>> {
+  if (!canUseCanvasRendering()) {
+    throw new Error("当前运行环境不支持 Canvas 页面渲染，无法将 PDF 转为图像识别");
+  }
+  ensurePdfWorkerConfigured();
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(bytes),
+    useWorkerFetch: false,
+    verbosity: 0,
+  });
+  const doc = await loadingTask.promise;
+  const outputs: Array<{ pageNumber: number; dataUrl: string }> = [];
+
+  for (const num of pageNumbers) {
+    if (num < 1 || num > doc.numPages) continue;
+    const page = await doc.getPage(num);
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.floor(viewport.width));
+    canvas.height = Math.max(1, Math.floor(viewport.height));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) continue;
+    await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+    outputs.push({
+      pageNumber: num,
+      dataUrl: canvas.toDataURL("image/png"),
+    });
+  }
+  return outputs;
+}

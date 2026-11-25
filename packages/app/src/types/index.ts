@@ -150,6 +150,71 @@ export interface ToolCallRecord {
   resultText?: string;
   durationMs?: number;
   modifiedPath?: string;
+  /** 修改前后核心变更摘要（如 Word/PPT 原地编辑） */
+  changeSummary?: string;
+  /** 修改前快照 ID（支持一键回滚） */
+  rollbackSnapshotId?: string;
+  /** 回滚目标文件路径 */
+  rollbackPath?: string;
+}
+
+export interface TodoItem {
+  id: string;
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
+  priority?: "high" | "medium" | "low";
+  updatedAt: number;
+}
+
+export interface QuestionnaireQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  multiSelect?: boolean;
+}
+
+export interface QuestionnaireRequest {
+  id: string;
+  title?: string;
+  questions: QuestionnaireQuestion[];
+  resolve: (answers: Record<string, string[]> | null) => void;
+}
+
+export interface HandoffPayload {
+  title: string;
+  summary: string;
+  keyDecisions: string[];
+  relevantFiles: string[];
+  nextSteps: string[];
+  promptDraft: string;
+}
+
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  url: string;
+  transport: "streamable-http" | "sse";
+  headers?: Record<string, string>;
+  enabled: boolean;
+}
+
+export interface TokenBurdenReport {
+  systemPromptTokens: number;
+  toolSchemaTokens: number;
+  historyTokens: number;
+  totalEstimatedTokens: number;
+  contextWindow: number;
+  budgetLimit: number;
+  usagePercent: number;
+  estimatedSessionCostUsd: number;
+  perPluginToolTokens: Record<string, number>;
+}
+
+export interface WorkspaceProfile {
+  id: string;
+  name: string;
+  nativeDir?: string;
+  createdAt: number;
 }
 
 export interface MessageUsage {
@@ -182,6 +247,10 @@ export interface ChatSession {
   updatedAt: number;
   messages: UiMessage[];
   totalTokens: number;
+  /** 所属工作区 ID（undefined 视为默认工作区 default） */
+  workspaceId?: string;
+  /** 会话级任务进度清单（pi-todo-list） */
+  todos?: TodoItem[];
 }
 
 export interface ApprovalRequest {
@@ -218,6 +287,16 @@ export interface AppSettings {
   onboardingDismissed?: boolean;
   /** 客户自定义的全局办公偏好提示词 */
   customSystemPrompt?: string;
+  /** Mizurisu-Pi 内置插件开关表 */
+  enabledPlugins?: Record<string, boolean>;
+  /** 受只读保护的工作区路径列表（支持 * 通配符） */
+  protectedPaths?: string[];
+  /** 已配置的 Remote MCP 服务器列表 */
+  mcpServers?: McpServerConfig[];
+  /** 可选自定义免费 SearXNG 搜索实例地址 */
+  customSearxngUrl?: string;
+  /** 可选 Web 端无 CORS 网页抓取代理地址 */
+  webProxyUrl?: string;
 }
 
 /** 全局轻提示操作按钮（如撤销删除） */

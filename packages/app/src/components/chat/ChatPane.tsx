@@ -35,6 +35,8 @@ import { BrandLogo, FileIcon, formatFileSize } from "../common/FileBadge";
 import { Button, Tooltip, cn } from "../ui";
 import { ComposerControls } from "./ComposerControls";
 import { MessageItem } from "./MessageItem";
+import { TodoBoard } from "./TodoBoard";
+import { TokenBurdenBar } from "./TokenBurdenBar";
 
 const QUICK_STARTERS = [
   {
@@ -122,12 +124,14 @@ export function ChatPane({
     files,
     customSkills,
     activeSkillId,
+    composerDraft,
     sendMessage,
     abortRun,
     uploadFilesToWorkspace,
     setActiveSkill,
     setSettingsOpen,
     dismissOnboarding,
+    clearComposerDraft,
     pushToast,
   } = useAppStore();
 
@@ -189,6 +193,16 @@ export function ChatPane({
       focusTextareaAt(draftExternal.length);
     }
   }, [draftExternal, onClearExternalDraft, focusTextareaAt]);
+
+  useEffect(() => {
+    if (composerDraft) {
+      setInput(composerDraft);
+      setCursorPos(composerDraft.length);
+      setDismissedAnchor(null);
+      clearComposerDraft();
+      focusTextareaAt(composerDraft.length);
+    }
+  }, [composerDraft, clearComposerDraft, focusTextareaAt]);
 
   useEffect(() => {
     if (!feedRef.current) return;
@@ -644,6 +658,8 @@ export function ChatPane({
       {/* 底部 Linear Composer 工作台 */}
       <div className="px-4 sm:px-6 pb-4 pt-1 shrink-0">
         <div className="max-w-[760px] mx-auto">
+          <TodoBoard todos={session?.todos} />
+          <TokenBurdenBar />
           {errorTip && errorDiagnosis && (
             <div className="mb-2 px-3 py-2.5 rounded-md border border-[var(--border-hairline)] border-l-2 border-l-[var(--status-danger)] bg-[var(--bg-surface)] text-[12px] space-y-1.5">
               <div className="flex items-start justify-between gap-2">

@@ -52,6 +52,21 @@ export class CapacitorPlatformAdapter implements PlatformAdapter {
     // 移动端 WebView Cookie 由原生容器与 /api/user/logout 管理
   }
 
+  async fetchWebUrl(url: string): Promise<SessionResponse> {
+    const fetchImpl = this.getFetch();
+    const res = await fetchImpl(url, {
+      method: "GET",
+      headers: {
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+      },
+    });
+    return {
+      status: res.status,
+      ok: res.ok,
+      text: await res.text(),
+    };
+  }
+
   async exportFile(filename: string, data: Uint8Array, mimeType: string): Promise<void> {
     const safeName = (filename.split("/").pop() || "document").replace(/[^\w.\-\u4e00-\u9fa5]/g, "_");
     try {

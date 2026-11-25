@@ -26,6 +26,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import { classifyApiError, getMizurisuConsoleLinks } from "../../newapi/client";
+import { workspaceVfs } from "../../storage/workspace-vfs";
 import { useAppStore } from "../../store/useAppStore";
 import type { ToolCallRecord, UiMessage } from "../../types";
 import { Button, Tooltip, cn } from "../ui";
@@ -138,7 +139,8 @@ function ToolCallItem({
   isLast: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { openPreview } = useAppStore();
+  const [rollingBack, setRollingBack] = useState(false);
+  const { openPreview, pushToast } = useAppStore();
 
   const dotColor =
     tool.status === "running"
@@ -189,6 +191,37 @@ function ToolCallItem({
           </button>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            {tool.rollbackSnapshotId && tool.rollbackPath && tool.status === "success" && (
+              <Tooltip content={`回滚修改（${tool.changeSummary || tool.rollbackPath}）`} side="top">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={rollingBack}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRollingBack(true);
+                    void workspaceVfs
+                      .restoreSnapshot(tool.rollbackSnapshotId!, tool.rollbackPath!)
+                      .then(() => {
+                        openPreview(tool.rollbackPath!);
+                        pushToast(`已回滚 ${tool.rollbackPath} 至修改前版本`, "success");
+                      })
+                      .catch((err) => {
+                        pushToast(
+                          `回滚失败：${err instanceof Error ? err.message : String(err)}`,
+                          "error"
+                        );
+                      })
+                      .finally(() => setRollingBack(false));
+                  }}
+                  className="h-5 px-1.5 rounded-[4px] text-[10.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                >
+                  <RotateCcw className="w-3 h-3 text-[var(--status-warning)]" />
+                  <span>回滚</span>
+                </Button>
+              </Tooltip>
+            )}
+
             {tool.modifiedPath && tool.status === "success" && (
               <Tooltip content={`在右侧工作台预览 ${tool.modifiedPath}`} side="top">
                 <Button
@@ -228,6 +261,12 @@ function ToolCallItem({
             </Tooltip>
           </div>
         </div>
+
+        {tool.changeSummary && tool.status === "success" && !expanded && (
+          <div className="pl-1.5 pb-1 text-[11px] text-[var(--text-muted)] truncate">
+            变更：{tool.changeSummary}
+          </div>
+        )}
 
         {expanded && (
           <div className="pl-1.5 pr-1 pt-1 pb-2 space-y-2">

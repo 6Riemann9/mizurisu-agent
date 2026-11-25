@@ -8,6 +8,7 @@ import {
   FileDown,
   FolderOpen,
   Loader2,
+  Lock,
   LogOut,
   MessageSquare,
   MessageSquarePlus,
@@ -17,11 +18,13 @@ import {
   Search,
   Settings,
   Trash2,
+  Unlock,
   Upload,
   Wand2,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { matchesProtectedPath } from "../../agent/extensions";
 import { BUILTIN_SKILLS } from "../../agent/skills";
 import { formatQuotaDisplay, maskApiKey } from "../../newapi/auth";
 import { getMizurisuConsoleLinks } from "../../newapi/client";
@@ -93,18 +96,28 @@ export function Sidebar({
     setSettingsOpen,
     setCommandPaletteOpen,
     mountNativeDirectory,
+    workspaces,
+    activeWorkspaceId,
+    createWorkspace,
+    switchWorkspace,
+    openNativeFolderWorkspace,
+    toggleProtectedPath,
     pushToast,
     logout,
   } = useAppStore();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const createMenuRef = useRef<HTMLDivElement>(null);
+  const workspaceMenuRef = useRef<HTMLDivElement>(null);
   const [filesOpen, setFilesOpen] = useState(true);
   const [chatsOpen, setChatsOpen] = useState(true);
   // 默认折叠低频办公技能分组，减少首屏侧栏视觉噪声
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [dragOverFiles, setDragOverFiles] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
   const [creatingDoc, setCreatingDoc] = useState(false);
 
   // 工作区搜索、ZIP 导出、防误删二次确认与文件/会话行内重命名状态
@@ -127,18 +140,24 @@ export function Sidebar({
     };
   }, []);
 
-  // 点击外部或按 Esc 时关闭新建文档下拉菜单
+  // 点击外部或按 Esc 时关闭新建文档/工作区切换下拉菜单
   useEffect(() => {
-    if (!createMenuOpen) return;
+    if (!createMenuOpen && !workspaceMenuOpen) return;
     const handleMouseDown = (e: MouseEvent) => {
       if (createMenuRef.current && !createMenuRef.current.contains(e.target as Node)) {
         setCreateMenuOpen(false);
+      }
+      if (workspaceMenuRef.current && !workspaceMenuRef.current.contains(e.target as Node)) {
+        setWorkspaceMenuOpen(false);
+        setCreatingWorkspace(false);
       }
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
         setCreateMenuOpen(false);
+        setWorkspaceMenuOpen(false);
+        setCreatingWorkspace(false);
       }
     };
     document.addEventListener("mousedown", handleMouseDown);
@@ -147,7 +166,7 @@ export function Sidebar({
       document.removeEventListener("mousedown", handleMouseDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [createMenuOpen]);
+  }, [createMenuOpen, workspaceMenuOpen]);
 
   /** 一键新建工作区 Office / Markdown 文档并立即在右侧工作台打开 */
   const handleCreateDocument = async (
@@ -524,6 +543,11 @@ export function Sidebar({
   })();
 
   const isConnected = Boolean(authSession && authSession.mode !== "guest" && config.apiKey);
+  const currentWorkspace =
+    workspaces.find((w) => w.id === activeWorkspaceId) ?? workspaces[0];
+  const workspaceSessions = sessions.filter(
+    (s) => (s.workspaceId || "default") === activeWorkspaceId
+  );
 
   // 侧栏紧凑列表项样式（28px 行高、线性中等字重选中态与左侧 2px 强调竖条）
   const listRowBaseClass =
@@ -542,8 +566,130 @@ export function Sidebar({
         className
       )}
     >
-      {/* 顶部动作：新建会话与 ⌘K 搜索入口 */}
+      {/* 顶部动作：多项目工作区切换 + 新建会话与 ⌘K 搜索入口 */}
       <div className="p-2 space-y-1 border-b border-[var(--border-hairline)]/60 shrink-0">
+        <div className="relative" ref={workspaceMenuRef}>
+          <button
+            type="button"
+            onClick={() => setWorkspaceMenuOpen((v) => !v)}
+            aria-expanded={workspaceMenuOpen}
+            className="w-full h-7 px-2 rounded-md border border-[var(--border-hairline)] bg-[var(--bg-canvas)] hover:border-[var(--border-strong)] flex items-center justify-between gap-1.5 text-[11.5px] transition cursor-pointer linear-focus-ring"
+          >
+            <span className="flex items-center gap-1.5 min-w-0">
+              <FolderOpen className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+              <span className="font-linear-medium text-[var(--text-primary)] truncate">
+                {currentWorkspace?.name || "默认工作区"}
+              </span>
+              {currentWorkspace?.nativeDir && (
+                <span className="text-[9.5px] px-1 rounded bg-[var(--accent-soft)] text-[var(--accent)] shrink-0">
+                  本地
+                </span>
+              )}
+            </span>
+            <ChevronDown className="w-3 h-3 text-[var(--text-muted)] shrink-0" />
+          </button>
+
+          {workspaceMenuOpen && (
+            <div className="absolute left-0 right-0 top-8 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-elevated)] shadow-[var(--shadow-popover)] z-40 p-1 space-y-0.5">
+              <div className="px-2 py-1 text-[10px] font-linear-medium text-[var(--text-muted)] border-b border-[var(--border-hairline)]/60">
+                切换项目工作区
+              </div>
+              <div className="max-h-40 overflow-y-auto space-y-0.5 pt-0.5">
+                {workspaces.map((ws) => {
+                  const isCurrent = ws.id === activeWorkspaceId;
+                  return (
+                    <button
+                      key={ws.id}
+                      type="button"
+                      onClick={() => {
+                        setWorkspaceMenuOpen(false);
+                        void switchWorkspace(ws.id);
+                      }}
+                      className={cn(
+                        "w-full h-7 px-2 rounded flex items-center justify-between gap-2 text-left text-[11.5px] transition cursor-pointer",
+                        isCurrent
+                          ? "bg-[var(--bg-active)] text-[var(--text-primary)] font-linear-medium"
+                          : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                      )}
+                    >
+                      <span className="truncate">{ws.name}</span>
+                      <span className="flex items-center gap-1 shrink-0">
+                        {ws.nativeDir && (
+                          <span className="text-[9.5px] font-mono text-[var(--text-muted)]">
+                            磁盘
+                          </span>
+                        )}
+                        {isCurrent && <Check className="w-3 h-3 text-[var(--accent)]" />}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="pt-1 border-t border-[var(--border-hairline)]/60 space-y-1">
+                {!creatingWorkspace ? (
+                  <button
+                    type="button"
+                    onClick={() => setCreatingWorkspace(true)}
+                    className="w-full h-7 px-2 rounded flex items-center gap-1.5 text-[11.5px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>新建隔离工作区</span>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1 p-1">
+                    <input
+                      type="text"
+                      autoFocus
+                      value={newWorkspaceName}
+                      onChange={(e) => setNewWorkspaceName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && newWorkspaceName.trim()) {
+                          const name = newWorkspaceName.trim();
+                          setNewWorkspaceName("");
+                          setCreatingWorkspace(false);
+                          setWorkspaceMenuOpen(false);
+                          void createWorkspace(name);
+                        }
+                      }}
+                      placeholder="输入项目名称..."
+                      className="flex-1 min-w-0 h-6 px-1.5 rounded border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-[11px] outline-none"
+                    />
+                    <Button
+                      variant="primary"
+                      size="xs"
+                      onClick={() => {
+                        if (!newWorkspaceName.trim()) return;
+                        const name = newWorkspaceName.trim();
+                        setNewWorkspaceName("");
+                        setCreatingWorkspace(false);
+                        setWorkspaceMenuOpen(false);
+                        void createWorkspace(name);
+                      }}
+                    >
+                      创建
+                    </Button>
+                  </div>
+                )}
+
+                {platform.canMountNativeDir && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWorkspaceMenuOpen(false);
+                      void openNativeFolderWorkspace();
+                    }}
+                    className="w-full h-7 px-2 rounded flex items-center gap-1.5 text-[11.5px] text-[var(--accent)] hover:bg-[var(--accent-soft)] cursor-pointer"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    <span>打开本机文件夹工作区...</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
         <Tooltip content="新建会话并聚焦输入框" shortcut="C" side="right">
           <Button
             variant="secondary"
@@ -881,6 +1027,10 @@ export function Sidebar({
                     }
 
                     const isConfirmingDelete = confirmDeletePath === f.path;
+                    const isProtected = matchesProtectedPath(
+                      f.path,
+                      settings.protectedPaths || []
+                    );
 
                     return (
                       <div
@@ -895,10 +1045,13 @@ export function Sidebar({
                           active ? listRowActiveClass : listRowIdleClass
                         )}
                       >
-                        <Tooltip content={f.path} side="right" delayMs={450}>
+                        <Tooltip content={isProtected ? `${f.path}（已开启只读保护）` : f.path} side="right" delayMs={450}>
                           <div className="flex items-center gap-2 min-w-0 flex-1">
                             <FileIcon category={f.category} className="w-3.5 h-3.5 shrink-0" />
                             <span className="truncate">{f.name}</span>
+                            {isProtected && (
+                              <Lock className="w-3 h-3 text-[var(--status-warning)] shrink-0" />
+                            )}
                           </div>
                         </Tooltip>
                         {isConfirmingDelete ? (
@@ -934,6 +1087,39 @@ export function Sidebar({
                               {formatFileSize(f.size)}
                             </span>
                             <div className="flex md:hidden md:group-hover:flex md:group-focus-within:flex items-center gap-0.5 shrink-0">
+                              <Tooltip
+                                content={isProtected ? "解除原件保护" : "设为只读保护（防 AI 误改）"}
+                                side="top"
+                              >
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void toggleProtectedPath(f.path).then((locked) => {
+                                      pushToast(
+                                        locked
+                                          ? `已锁定保护原件：${f.path}`
+                                          : `已解除保护：${f.path}`,
+                                        "info"
+                                      );
+                                    });
+                                  }}
+                                  aria-label={isProtected ? `解除保护 ${f.name}` : `锁定保护 ${f.name}`}
+                                  className={cn(
+                                    "size-5 rounded-[4px] hover:bg-[var(--bg-active)]",
+                                    isProtected
+                                      ? "text-[var(--status-warning)]"
+                                      : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                                  )}
+                                >
+                                  {isProtected ? (
+                                    <Unlock className="w-3 h-3" />
+                                  ) : (
+                                    <Lock className="w-3 h-3" />
+                                  )}
+                                </Button>
+                              </Tooltip>
                               <Tooltip content="重命名文件" side="top">
                                 <Button
                                   variant="ghost"
@@ -987,13 +1173,13 @@ export function Sidebar({
                 <ChevronRight className="w-3 h-3 shrink-0" />
               )}
               <span className="truncate">会话历史</span>
-              <span className={sectionCountBadgeClass}>{sessions.length}</span>
+              <span className={sectionCountBadgeClass}>{workspaceSessions.length}</span>
             </div>
           </div>
 
           {chatsOpen && (
             <div className="mt-0.5 space-y-0.5">
-              {sessions.map((s) => {
+              {workspaceSessions.map((s) => {
                 const active = s.id === activeSessionId;
                 const isEditing = editingSessionId === s.id;
 

@@ -85,6 +85,20 @@ export class WebPlatformAdapter implements PlatformAdapter {
     // 浏览器环境由服务端 Set-Cookie / /api/user/logout 管理 HttpOnly Cookie
   }
 
+  async fetchWebUrl(url: string): Promise<SessionResponse> {
+    const res = await globalThis.fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+      },
+    });
+    return {
+      status: res.status,
+      ok: res.ok,
+      text: await res.text(),
+    };
+  }
+
   async exportFile(filename: string, data: Uint8Array, mimeType: string): Promise<void> {
     const copy = new Uint8Array(data);
     const blob = new Blob([copy], { type: mimeType || "application/octet-stream" });
